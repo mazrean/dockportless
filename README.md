@@ -17,11 +17,11 @@ Inspired by [vercel/portless](https://github.com/vercel-labs/portless) — the s
 
 ## Features
 
-- **Zero-config port management** — OS-level port allocation via `bind(0)`, no collisions
+- **Zero-config port management** — Automatically assigns available ports, no collisions
 - **Pretty local URLs** — Access services at `web.myapp.localhost:7355` instead of `localhost:49152`
-- **Parallel worktree support** — Develop multiple features simultaneously across git worktrees with `SO_REUSEPORT`
+- **Parallel worktree support** — Develop multiple features simultaneously across git worktrees without port conflicts
 - **Agent-friendly** — Includes an [Agent Skill](#agent-skill) for AI coding agents to automate dev environment setup
-- **Live reload** — File-watching (inotify/kqueue) syncs routing across processes in real time
+- **Live reload** — Routing updates are synced across processes in real time
 - **Single binary** — Built in Zig, no runtime dependencies
 - **Compose-compatible** — Works with `docker compose`, `podman-compose`, or any compose-spec tool
 
@@ -162,15 +162,14 @@ All services are accessible through the same port, namespaced by project:
 - `http://api.myapp-fix-auth.localhost:7355`
 
 > [!NOTE]
-> Multiple dockportless processes share port 7355 using `SO_REUSEPORT`. Any process can route to any project's services.
+> Multiple dockportless processes share port 7355 seamlessly. Any process can route to any project's services.
 
 ## How It Works
 
 ```mermaid
 flowchart TD
-    A["Browser\nhttp://web.myapp.localhost:7355"] --> B["dockportless reverse proxy\nSO_REUSEPORT on :7355"]
-    B -- "parse Host header" --> C["mapping store\nJSON files in $XDG_RUNTIME_DIR\nwatched via inotify/kqueue"]
-    C --> D["localhost:54321\n(auto-assigned port)"]
+    A["Browser<br/>http://web.myapp.localhost:7355"] --> B["dockportless<br/>reverse proxy on :7355"]
+    B -- "resolve service from Host header<br/>web.myapp → localhost:54321" --> C["localhost:54321<br/>(auto-assigned port)"]
 ```
 
 ## Examples

@@ -1,0 +1,16 @@
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "${WEB_PORT:-80}:80"
+
+  api:
+    image: hashicorp/http-echo
+    command: ["-text=hello from prod api", "-listen=:5678"]
+    ports:
+      - "${API_PORT:-5678}:5678"
+
+  cache:
+    image: redis:7-alpine
+    ports:
+      - "${CACHE_PORT:-6379}:6379"

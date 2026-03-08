@@ -1,0 +1,11 @@
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "${WEB_PORT:-3000}:80"
+
+  api:
+    image: hashicorp/http-echo
+    command: ["-text=hello from dev api", "-listen=:5678"]
+    ports:
+      - "${API_PORT:-5678}:5678"

@@ -169,7 +169,7 @@ All services are accessible through the same port, namespaced by project:
 ```mermaid
 flowchart TD
     A["Browser<br/>http://web.myapp.localhost:7355"] --> B["dockportless<br/>reverse proxy on :7355"]
-    B -- "resolve service from Host header<br/>web.myapp → localhost:54321" --> C["localhost:54321<br/>(auto-assigned port)"]
+    B -- "resolve Host<br/>web.myapp → :54321" --> C["localhost:54321<br/>(auto-assigned port)"]
 ```
 
 ## Examples

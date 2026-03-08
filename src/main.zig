@@ -129,11 +129,7 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
         std.debug.print("Warning: no services found in compose file\n", .{});
     }
 
-    // 2. Allocate ports
-    const ports = try port.allocatePorts(allocator, services.len);
-    defer allocator.free(ports);
-
-    // 3. Write mapping file
+    // 2. Read existing mappings to get reserved ports
     const mapping_dir_path = try mapping.getMappingDir(allocator);
     defer allocator.free(mapping_dir_path);
 
@@ -145,6 +141,22 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
 
     var mapping_dir = try std.fs.openDirAbsolute(mapping_dir_path, .{});
     defer mapping_dir.close();
+
+    const existing_mappings = try mapping.readAllMappings(allocator, mapping_dir_path);
+    defer mapping.freeAllMappings(allocator, existing_mappings);
+
+    // Collect reserved ports from existing mappings
+    var reserved_ports: std.ArrayListUnmanaged(u16) = .{};
+    defer reserved_ports.deinit(allocator);
+    for (existing_mappings) |m| {
+        for (m.services) |svc| {
+            try reserved_ports.append(allocator, svc.port);
+        }
+    }
+
+    // 3. Allocate ports (avoiding reserved)
+    const ports = try port.allocatePorts(allocator, services.len, reserved_ports.items);
+    defer allocator.free(ports);
 
     const service_mappings = try allocator.alloc(mapping.ServiceMapping, services.len);
     defer allocator.free(service_mappings);

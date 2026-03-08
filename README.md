@@ -19,7 +19,8 @@ Inspired by [vercel/portless](https://github.com/vercel-labs/portless) — the s
 
 - **Zero-config port management** — OS-level port allocation via `bind(0)`, no collisions
 - **Pretty local URLs** — Access services at `web.myapp.localhost:7355` instead of `localhost:49152`
-- **Multi-project support** — Run multiple compose projects simultaneously with `SO_REUSEPORT`
+- **Parallel worktree support** — Develop multiple features simultaneously across git worktrees with `SO_REUSEPORT`
+- **Agent-friendly** — Includes an [Agent Skill](#agent-skill) for AI coding agents to automate dev environment setup
 - **Live reload** — File-watching (inotify/kqueue) syncs routing across processes in real time
 - **Single binary** — Built in Zig, no runtime dependencies
 - **Compose-compatible** — Works with `docker compose`, `podman-compose`, or any compose-spec tool
@@ -134,52 +135,42 @@ Access them at:
 
 ### `dockportless proxy`
 
-Starts only the proxy server (useful for connecting to already-running services).
+Starts only the proxy server. This is only needed when the proxy process is restarted while `dockportless run` is still running — for example, after a crash or manual restart. Under normal usage, `dockportless run` starts the proxy automatically.
 
 ```bash
 dockportless proxy
 ```
 
-## Multi-Project Setup
+## Parallel Development with Git Worktrees
 
-Run multiple projects at the same time — each gets its own namespace:
+dockportless is designed for developing multiple features in parallel using [git worktrees](https://git-scm.com/docs/git-worktree). Each worktree gets its own project name, ports, and proxy routes — no collisions, no coordination needed.
 
 ```bash
-# Terminal 1
-cd frontend && dockportless run frontend docker compose up
+# Main worktree
+cd ~/myapp && dockportless run myapp docker compose up
 
-# Terminal 2
-cd backend && dockportless run backend docker compose up
+# Feature branch worktree
+cd ~/myapp-feat-login && dockportless run myapp-feat-login docker compose up
+
+# Another feature branch
+cd ~/myapp-fix-auth && dockportless run myapp-fix-auth docker compose up
 ```
 
-All services are accessible through the same port:
-- `http://web.frontend.localhost:7355`
-- `http://storybook.frontend.localhost:7355`
-- `http://api.backend.localhost:7355`
+All services are accessible through the same port, namespaced by project:
+- `http://web.myapp.localhost:7355`
+- `http://web.myapp-feat-login.localhost:7355`
+- `http://api.myapp-fix-auth.localhost:7355`
 
 > [!NOTE]
 > Multiple dockportless processes share port 7355 using `SO_REUSEPORT`. Any process can route to any project's services.
 
 ## How It Works
 
-```
-Browser → http://web.myapp.localhost:7355
-                    │
-                    ▼
-         ┌─────────────────┐
-         │  dockportless    │
-         │  reverse proxy   │  ← SO_REUSEPORT on :7355
-         │  (Host routing)  │
-         └────────┬────────┘
-                  │ parse Host header
-                  ▼
-         ┌─────────────────┐
-         │  mapping store   │  ← JSON files in $XDG_RUNTIME_DIR
-         │  web.myapp:54321 │     watched via inotify/kqueue
-         └────────┬────────┘
-                  │
-                  ▼
-         localhost:54321 (auto-assigned port)
+```mermaid
+flowchart TD
+    A["Browser\nhttp://web.myapp.localhost:7355"] --> B["dockportless reverse proxy\nSO_REUSEPORT on :7355"]
+    B -- "parse Host header" --> C["mapping store\nJSON files in $XDG_RUNTIME_DIR\nwatched via inotify/kqueue"]
+    C --> D["localhost:54321\n(auto-assigned port)"]
 ```
 
 ## Examples
@@ -190,14 +181,20 @@ See the [`examples/`](examples/) directory:
 |---------|-------------|
 | [simple-web](examples/simple-web/) | Single nginx service |
 | [multi-service](examples/multi-service/) | Web + API + DB |
-| [multi-project](examples/multi-project/) | Frontend and backend as separate projects |
+| [multi-project](examples/multi-project/) | Parallel worktrees simulated with separate project names |
 | [custom-compose-file](examples/custom-compose-file/) | Using `-f` flag with different compose files |
 
 ## Agent Skill
 
-An [Agent Skill](skills/verifying-dockportless/) is included for AI coding agents (e.g. Claude Code). It automates launching and verifying dev environments with dockportless, deriving worktree-unique project names to avoid port collisions during parallel development with git worktrees.
+dockportless includes an [Agent Skill](skills/verifying-dockportless/) for AI coding agents like [Claude Code](https://claude.com/claude-code). The skill enables agents to:
 
-You can install it using [`skills`](https://github.com/vercel-labs/skills) CLI:
+- **Derive worktree-unique project names** automatically from the git worktree path
+- **Launch and verify** dev environments without manual intervention
+- **Develop across multiple worktrees** in parallel — each agent session gets isolated ports and routes
+
+This makes dockportless ideal for agent-driven workflows where multiple features are developed concurrently in separate worktrees.
+
+### Install via [`skills`](https://github.com/vercel-labs/skills) CLI
 
 ```bash
 npx skills add mazrean/dockportless --skill verifying-dockportless

@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "skills": {
+    "releasing-zig-with-goreleaser": {
+      "source": "mazrean/agent-skills",
+      "sourceType": "github",
+      "computedHash": "644b29b1eb62b5361e5a553e7c4d0c50ae980900d80e310827195aa51452d205"
+    },
+    "sharing-sockets-with-so-reuseport-in-zig": {
+      "source": "mazrean/agent-skills",
+      "sourceType": "github",
+      "computedHash": "21b63e2d9750ece5d6b7444b88d86c8de30dc9f62acd6a1fc729a2cbe4cecdd0"
+    },
+    "writing-feature-spec": {
+      "source": "mazrean/agent-skills",
+      "sourceType": "github",
+      "computedHash": "f3e166481c20de39b585a2f4394d452fa32ee6b84b26d220153f235c9f6315e2"
+    },
+    "writing-implementation-tasks": {
+      "source": "mazrean/agent-skills",
+      "sourceType": "github",
+      "computedHash": "31eafb939eeb0d4a81bd43e7084cb032531ee36eed57c2df8adba61962db9df3"
+    },
+    "writing-project-constitution": {
+      "source": "mazrean/agent-skills",
+      "sourceType": "github",
+      "computedHash": "982addbcc89aac0297b256d3223333b25f53985265f0eb3243cae4250080ea3b"
+    },
+    "writing-technical-design": {
+      "source": "mazrean/agent-skills",
+      "sourceType": "github",
+      "computedHash": "7fb00a1fe9e9e64c0df27e3a88c8fe4d31e7dd153aacf5781f451b9a8098fc2d"
+    },
+    "writing-zig-cli-tools": {
+      "source": "mazrean/agent-skills",
+      "sourceType": "github",
+      "computedHash": "fec051494c323af0491ad8d6cda03e6a12e56022626a3a641662f9b44f4cd607"
+    }
+  }
+}

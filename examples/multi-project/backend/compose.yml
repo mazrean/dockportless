@@ -1,0 +1,12 @@
+services:
+  api:
+    image: golang:1.23-alpine
+    working_dir: /app
+    command: ["sh", "-c", "echo 'api running on port 8080' && sleep infinity"]
+    ports:
+      - "${API_PORT:-8080}:8080"
+
+  worker:
+    image: golang:1.23-alpine
+    working_dir: /app
+    command: ["sh", "-c", "echo 'worker running' && sleep infinity"]

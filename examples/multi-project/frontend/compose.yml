@@ -1,0 +1,14 @@
+services:
+  web:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["sh", "-c", "echo 'frontend running on port 3000' && sleep infinity"]
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+
+  storybook:
+    image: node:22-alpine
+    working_dir: /app
+    command: ["sh", "-c", "echo 'storybook running on port 6006' && sleep infinity"]
+    ports:
+      - "${STORYBOOK_PORT:-6006}:6006"

@@ -21,9 +21,31 @@ Inspired by [vercel/portless](https://github.com/vercel-labs/portless) — the s
 - **Pretty local URLs** — Access services at `web.myapp.localhost:7355` instead of `localhost:49152`
 - **Parallel worktree support** — Develop multiple features simultaneously across git worktrees without port conflicts
 - **Agent-friendly** — Includes an [Agent Skill](#agent-skill) for AI coding agents to automate dev environment setup
-- **Live reload** — Routing updates are synced across processes in real time
 - **Single binary** — Built in Zig, no runtime dependencies
-- **Compose-compatible** — Works with `docker compose`, `podman-compose`, or any compose-spec tool
+- **Compose-compatible** — Works with `docker compose`, `podman-compose`, `nerdctl` or any compose-spec tool
+
+## Quick Start
+
+Given a `compose.yml`:
+
+```yaml
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "${WEB_PORT:-8080}:80"
+```
+
+Run it with dockportless:
+
+```bash
+dockportless run myapp docker compose up
+```
+
+Access your service at: **http://web.myapp.localhost:7355**
+
+> [!TIP]
+> Your compose file still works without dockportless — `docker compose up` will use the default port (`8080` in this example).
 
 ## Installation
 
@@ -68,29 +90,6 @@ Requires [Zig 0.15+](https://ziglang.org/download/):
 ```bash
 zig build -Doptimize=ReleaseSafe
 ```
-
-## Quick Start
-
-Given a `compose.yml`:
-
-```yaml
-services:
-  web:
-    image: nginx:alpine
-    ports:
-      - "${WEB_PORT:-8080}:80"
-```
-
-Run it with dockportless:
-
-```bash
-dockportless run myapp docker compose up
-```
-
-Access your service at: **http://web.myapp.localhost:7355**
-
-> [!TIP]
-> Your compose file still works without dockportless — `docker compose up` will use the default port (`8080` in this example).
 
 ## Usage
 

@@ -2,3 +2,4 @@
 .worktree
 .zig-cache
 zig-out
+dist

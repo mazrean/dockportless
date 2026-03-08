@@ -9,8 +9,8 @@ Example using `-f` flag to specify compose files with non-standard names.
 dockportless run myapp docker compose -f compose.dev.yml up
 
 # Access via local URL
-curl http://web.myapp.localhost:1355/
-curl http://api.myapp.localhost:1355/
+curl http://web.myapp.localhost:7355/
+curl http://api.myapp.localhost:7355/
 ```
 
 ## Multiple compose files
@@ -20,9 +20,9 @@ curl http://api.myapp.localhost:1355/
 dockportless run myapp docker compose -f compose.dev.yml -f compose.prod.yml up
 
 # All services from both files are available
-curl http://web.myapp.localhost:1355/
-curl http://api.myapp.localhost:1355/
-# redis-cli -h cache.myapp.localhost -p 1355
+curl http://web.myapp.localhost:7355/
+curl http://api.myapp.localhost:7355/
+# redis-cli -h cache.myapp.localhost -p 7355
 ```
 
 ## Also works with podman

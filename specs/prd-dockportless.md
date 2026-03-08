@@ -10,7 +10,7 @@ last-updated: 2026-03-08
 
 ## TL;DR
 
-CLI ツールで、compose spec 互換のコンテナ構築コマンド（docker compose 等）をラップし、サービスごとに空きポートを自動割り当てした上で `<service>.<project>.localhost:1355` の URL でローカルアクセス可能にする。Zig 製シングルバイナリとして Linux・macOS に対応。
+CLI ツールで、compose spec 互換のコンテナ構築コマンド（docker compose 等）をラップし、サービスごとに空きポートを自動割り当てした上で `<service>.<project>.localhost:7355` の URL でローカルアクセス可能にする。Zig 製シングルバイナリとして Linux・macOS に対応。
 
 ## Requirements
 
@@ -29,10 +29,10 @@ CLI ツールで、compose spec 互換のコンテナ構築コマンド（docker
 
 #### プロキシサーバー
 
-- **FR-4**: dockportless コマンド実行時に内部プロキシサーバーを起動し、`<service_name>.<project_name>.localhost:1355` の URL で各サービスにリクエストを転送する SHALL。
-  - Acceptance: `curl http://web.myapp.localhost:1355/` が `WEB_PORT` で起動したサービスにルーティングされること。
+- **FR-4**: dockportless コマンド実行時に内部プロキシサーバーを起動し、`<service_name>.<project_name>.localhost:7355` の URL で各サービスにリクエストを転送する SHALL。
+  - Acceptance: `curl http://web.myapp.localhost:7355/` が `WEB_PORT` で起動したサービスにルーティングされること。
 
-- **FR-5**: 複数の dockportless プロジェクトが同時に実行される場合、SO_REUSEPORT を使用して同じポート 1355 で複数のプロキシサーバーを起動できる SHALL。
+- **FR-5**: 複数の dockportless プロジェクトが同時に実行される場合、SO_REUSEPORT を使用して同じポート 7355 で複数のプロキシサーバーを起動できる SHALL。
   - Acceptance: 2 つの dockportless プロジェクトを同時起動し、両方のプロジェクトのサービスに正しくルーティングされること。
 
 - **FR-6**: 特定ディレクトリ下に project_name、service_name、ポート番号のマッピングを記録する SHALL。
@@ -70,12 +70,12 @@ CLI ツールで、compose spec 互換のコンテナ構築コマンド（docker
 - 開発者として、複数のマイクロサービスをローカルで起動した際にポート番号を覚えずに URL でアクセスしたい。
   - Given compose ファイルに web・api・db の 3 サービスが定義されている、
     when `dockportless run myapp docker compose up` を実行する、
-    then `web.myapp.localhost:1355` で web サービスに、`api.myapp.localhost:1355` で api サービスにアクセスできる。
+    then `web.myapp.localhost:7355` で web サービスに、`api.myapp.localhost:7355` で api サービスにアクセスできる。
 
 - 開発者として、複数のプロジェクトを同時に開発したい。
   - Given プロジェクト A（frontend）とプロジェクト B（backend）がある、
     when 両方を `dockportless run` で起動する、
-    then `web.frontend.localhost:1355` と `api.backend.localhost:1355` の両方にアクセスできる。
+    then `web.frontend.localhost:7355` と `api.backend.localhost:7355` の両方にアクセスできる。
   - Given プロジェクト A を先に起動している、
     when プロジェクト B を後から起動する、
     then プロジェクト A のプロキシからもプロジェクト B のサービスにルーティングされる。
@@ -94,7 +94,7 @@ CLI ツールで、compose spec 互換のコンテナ構築コマンド（docker
 
 - Zig で実装する（最新の安定版を使用）
 - compose ファイルの YAML パースのみ行い、コンテナ操作は一切行わない（ユーザー指定のコマンドに委任）
-- プロキシポートは 1355 固定
+- プロキシポートは 7355 固定
 - localhost ドメインのみ対応（DNS 設定不要）
 
 ## Non-Goals
@@ -138,7 +138,7 @@ Zig を選択する理由:
 | サービス名が環境変数名として不正（ハイフン含む等） | ハイフンをアンダースコアに変換、大文字化 | FR-1 |
 | 同じ project_name で 2 回起動 | 既存マッピングを上書き | FR-6 |
 | dockportless プロセスが異常終了 | マッピングファイルが残る。次回起動時に古いエントリを検出して削除 | FR-6, FR-7 |
-| ポート 1355 が他のアプリに占有されている | エラーメッセージを表示して終了 | FR-5 |
+| ポート 7355 が他のアプリに占有されている | エラーメッセージを表示して終了 | FR-5 |
 | Host ヘッダーに未知のサービス名 | 404 レスポンスを返す | FR-8 |
 | compose ファイルにサービスが 0 個 | 警告メッセージを表示、プロキシは起動するがルーティングなし | FR-10 |
 

@@ -19,7 +19,7 @@ last-updated: 2026-03-08
 | CLI パーサー | zig-clap | Zig エコシステム標準、comptime パラメータ定義 |
 | YAML パース | zig-yaml | Zig ネイティブ YAML パーサー |
 | プロキシ | 自前 HTTP リバースプロキシ | std.net ベース、外部依存なし |
-| ソケット共有 | SO_REUSEPORT | 独立プロセス間でポート 1355 共有 |
+| ソケット共有 | SO_REUSEPORT | 独立プロセス間でポート 7355 共有 |
 | プロセス間通信 | JSON ファイル + inotify/kqueue | 外部依存なし、シンプル |
 | マッピング保存場所 | `$XDG_RUNTIME_DIR/dockportless/` (fallback: `/tmp/dockportless/`) | 揮発性、再起動で自動クリーン |
 | ポート取得 | bind(0) + getsockname | OS にポート割り当てを委任 |
@@ -87,7 +87,7 @@ last-updated: 2026-03-08
 
 ### Proxy Server
 
-- **Responsibility**: SO_REUSEPORT で 1355 番ポートを listen し、Host ヘッダーに基づいてリクエストを転送
+- **Responsibility**: SO_REUSEPORT で 7355 番ポートを listen し、Host ヘッダーに基づいてリクエストを転送
 - **Location**: `src/proxy.zig`
 - **Interface**: `pub fn start(allocator, mappings) !void`
 - **Depends on**: std.net, std.posix, File Watcher
@@ -162,11 +162,11 @@ pub fn removeMapping(project_name: []const u8) !void {}
 
 ```zig
 /// プロキシサーバーを起動（ブロッキング）
-/// SO_REUSEPORT で :1355 に bind
+/// SO_REUSEPORT で :7355 に bind
 pub fn start(allocator: std.mem.Allocator, initial_mappings: []const ProjectMapping) !void {}
 
 /// Host ヘッダーから project_name と service_name を抽出
-/// 形式: <service_name>.<project_name>.localhost:1355
+/// 形式: <service_name>.<project_name>.localhost:7355
 fn parseHost(host: []const u8) ?struct { service: []const u8, project: []const u8 } {}
 ```
 
@@ -213,7 +213,7 @@ $XDG_RUNTIME_DIR/dockportless/
 
 ```text
 1. マッピングディレクトリの全ファイルを読み込み（readAllMappings）
-2. SO_REUSEPORT でポート 1355 を listen
+2. SO_REUSEPORT でポート 7355 を listen
 3. ファイル監視を開始（watcher.watch）
 4. リクエスト受信 → Host ヘッダー解析 → マッピング検索 → リバースプロキシ
 5. ファイル変更通知 → マッピングを再読み込み

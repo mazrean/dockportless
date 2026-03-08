@@ -9,7 +9,7 @@ Single service example using nginx.
 dockportless run simple-web docker compose up
 
 # Access via local URL
-curl http://web.simple-web.localhost:1355/
+curl http://web.simple-web.localhost:7355/
 ```
 
 ## Without dockportless

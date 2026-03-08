@@ -4,7 +4,7 @@ const mapping = @import("mapping.zig");
 
 const Allocator = std.mem.Allocator;
 
-pub const PROXY_PORT: u16 = 1355;
+pub const PROXY_PORT: u16 = 7355;
 
 pub const HostInfo = struct {
     service: []const u8,
@@ -224,7 +224,7 @@ fn handleClient(allocator: Allocator, client_fd: posix.socket_t, mapping_dir_pat
 // --- Tests ---
 
 test "parseHost: valid host" {
-    const result = parseHost("web.myapp.localhost:1355").?;
+    const result = parseHost("web.myapp.localhost:7355").?;
     try std.testing.expectEqualStrings("web", result.service);
     try std.testing.expectEqualStrings("myapp", result.project);
 }
@@ -236,7 +236,7 @@ test "parseHost: without port" {
 }
 
 test "parseHost: just localhost" {
-    try std.testing.expect(parseHost("localhost:1355") == null);
+    try std.testing.expect(parseHost("localhost:7355") == null);
 }
 
 test "parseHost: single component before localhost" {
@@ -253,7 +253,7 @@ test "parseHost: empty string" {
 }
 
 test "parseHost: multi-level project name" {
-    const result = parseHost("web.my.app.localhost:1355").?;
+    const result = parseHost("web.my.app.localhost:7355").?;
     try std.testing.expectEqualStrings("web", result.service);
     try std.testing.expectEqualStrings("my.app", result.project);
 }
@@ -290,9 +290,9 @@ test "findBackendPort: not found" {
 }
 
 test "extractHostHeader: standard header" {
-    const headers = "GET / HTTP/1.1\r\nHost: web.myapp.localhost:1355\r\nAccept: */*\r\n\r\n";
+    const headers = "GET / HTTP/1.1\r\nHost: web.myapp.localhost:7355\r\nAccept: */*\r\n\r\n";
     const host = extractHostHeader(headers).?;
-    try std.testing.expectEqualStrings("web.myapp.localhost:1355", host);
+    try std.testing.expectEqualStrings("web.myapp.localhost:7355", host);
 }
 
 test "extractHostHeader: case insensitive" {

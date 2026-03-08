@@ -9,9 +9,9 @@ Three-service example: web (nginx) + api (http-echo) + db (postgres).
 dockportless run myapp docker compose up
 
 # Access each service by name
-curl http://web.myapp.localhost:1355/
-curl http://api.myapp.localhost:1355/
-# psql -h db.myapp.localhost -p 1355  (TCP proxy for non-HTTP)
+curl http://web.myapp.localhost:7355/
+curl http://api.myapp.localhost:7355/
+# psql -h db.myapp.localhost -p 7355  (TCP proxy for non-HTTP)
 ```
 
 ## Environment variables set by dockportless

@@ -1,6 +1,6 @@
 # dockportless
 
-**Compose-compatible local service router with automatic port assignment.**
+**Local service router with automatic port assignment, like [vercel/portless](https://github.com/vercel-labs/portless) but for any compose-compatible tool.**
 
 No more port conflicts. No more remembering port numbers. Just `<service>.<project>.localhost`.
 
@@ -13,7 +13,7 @@ dockportless wraps any compose-compatible command (like `docker compose up`) and
 3. Sets `<SERVICE_NAME>_PORT` environment variables
 4. Starts a reverse proxy so you can access services via `<service>.<project>.localhost:7355`
 
-It's like [Vercel](https://vercel.com/) routing, but for your local Docker Compose services.
+Inspired by [vercel/portless](https://github.com/vercel-labs/portless) — the same pretty-URL experience, brought to your local Docker Compose workflow.
 
 ## Features
 

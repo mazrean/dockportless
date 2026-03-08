@@ -94,7 +94,7 @@ fn processInotifyEvents(ifd: i32, callback: WatchCallback) !void {
 
     var offset: usize = 0;
     while (offset < n) {
-        const event: *const std.os.linux.inotify_event = @alignCast(@ptrCast(&buf[offset]));
+        const event: *const std.os.linux.inotify_event = @ptrCast(@alignCast(&buf[offset]));
         offset += @sizeOf(std.os.linux.inotify_event) + event.len;
 
         const name = event.getName() orelse continue;

@@ -1,0 +1,51 @@
+version: 2
+
+builds:
+  - builder: zig
+    binary: dockportless
+    targets:
+      - x86_64-linux
+      - aarch64-linux
+      - x86_64-macos
+      - aarch64-macos
+    flags:
+      - -Doptimize=ReleaseSafe
+
+archives:
+  - formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+homebrew_casks:
+  - name: dockportless
+    binaries:
+      - dockportless
+    homepage: https://github.com/mazrean/dockportless
+    description: "Compose-compatible local service router with auto port assignment"
+    directory: Casks
+    repository:
+      owner: mazrean
+      name: homebrew-tap
+
+nfpms:
+  - package_name: dockportless
+    homepage: https://github.com/mazrean/dockportless
+    description: "Compose-compatible local service router with auto port assignment"
+    maintainer: mazrean
+    license: MIT
+    formats:
+      - deb
+      - rpm
+      - apk
+    bindir: /usr/bin

@@ -50,7 +50,7 @@ fn findBackendPort(mappings: []const mapping.ProjectMapping, project: []const u8
 
 /// Create a listening socket with SO_REUSEPORT.
 fn createListenSocket() !posix.socket_t {
-    const sock = try posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
+    const sock = try posix.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     errdefer posix.close(sock);
 
     // SO_REUSEPORT
@@ -106,16 +106,25 @@ fn extractHostHeader(headers: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Set socket receive timeout.
+fn setRecvTimeout(fd: posix.socket_t, seconds: u32) void {
+    const tv = posix.timeval{ .sec = @intCast(seconds), .usec = 0 };
+    posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
+}
+
 /// Forward the request to the backend service.
 fn forwardRequest(allocator: Allocator, client_fd: posix.socket_t, request_data: []const u8, backend_port: u16) !void {
     const backend_addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, backend_port);
-    const backend_fd = try posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
+    const backend_fd = try posix.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     defer posix.close(backend_fd);
 
     posix.connect(backend_fd, &backend_addr.any, backend_addr.getOsSockLen()) catch {
         sendErrorResponse(client_fd, "502 Bad Gateway", "Backend service is not available");
         return;
     };
+
+    // Set receive timeout on backend to avoid hanging on keep-alive connections
+    setRecvTimeout(backend_fd, 5);
 
     // Forward the request
     _ = posix.write(backend_fd, request_data) catch {
@@ -140,6 +149,23 @@ fn sendErrorResponse(client_fd: posix.socket_t, status: []const u8, body: []cons
     _ = posix.write(client_fd, response) catch {};
 }
 
+const ClientContext = struct {
+    client_fd: posix.socket_t,
+    allocator: Allocator,
+    mapping_dir_path: []const u8,
+};
+
+fn clientThread(ctx: ClientContext) void {
+    defer posix.close(ctx.client_fd);
+
+    // Set receive timeout on client socket
+    setRecvTimeout(ctx.client_fd, 10);
+
+    handleClient(ctx.allocator, ctx.client_fd, ctx.mapping_dir_path) catch |err| {
+        std.debug.print("Error handling client: {}\n", .{err});
+    };
+}
+
 /// Start the proxy server (blocking).
 pub fn start(allocator: Allocator, mapping_dir_path: []const u8) !void {
     const listen_fd = try createListenSocket();
@@ -152,11 +178,18 @@ pub fn start(allocator: Allocator, mapping_dir_path: []const u8) !void {
         var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr);
 
         const client_fd = posix.accept(listen_fd, &client_addr, &addr_len, 0) catch continue;
-        defer posix.close(client_fd);
 
-        handleClient(allocator, client_fd, mapping_dir_path) catch |err| {
-            std.debug.print("Error handling client: {}\n", .{err});
+        const ctx = ClientContext{
+            .client_fd = client_fd,
+            .allocator = allocator,
+            .mapping_dir_path = mapping_dir_path,
         };
+
+        const thread = std.Thread.spawn(.{}, clientThread, .{ctx}) catch {
+            posix.close(client_fd);
+            continue;
+        };
+        thread.detach();
     }
 }
 

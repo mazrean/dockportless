@@ -1,2 +1,4 @@
 [tools]
+goreleaser = "latest"
 zig = "latest"
+zls = "latest"

@@ -1,2 +1,4 @@
 .claude
 .worktree
+.zig-cache
+zig-out

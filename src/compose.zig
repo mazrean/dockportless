@@ -64,6 +64,33 @@ fn parseServicesFromSource(allocator: Allocator, source: []const u8) ![]const []
     return result;
 }
 
+/// Extract compose file paths from command arguments.
+/// Scans for -f/--file flags in the command arguments.
+/// Returns null if no -f flags found.
+pub fn extractComposeFilesFromArgs(allocator: Allocator, cmd_args: []const []const u8) !?[]const []const u8 {
+    var files: std.ArrayListUnmanaged([]const u8) = .{};
+    defer files.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < cmd_args.len) : (i += 1) {
+        const arg = cmd_args[i];
+        if (std.mem.eql(u8, arg, "-f") or std.mem.eql(u8, arg, "--file")) {
+            i += 1;
+            if (i < cmd_args.len) {
+                try files.append(allocator, cmd_args[i]);
+            }
+        } else if (std.mem.startsWith(u8, arg, "--file=")) {
+            try files.append(allocator, arg["--file=".len..]);
+        }
+    }
+
+    if (files.items.len == 0) return null;
+
+    const result = try allocator.alloc([]const u8, files.items.len);
+    @memcpy(result, files.items);
+    return result;
+}
+
 pub fn freeServices(allocator: Allocator, services: []const []const u8) void {
     for (services) |service| {
         allocator.free(service);
@@ -137,6 +164,81 @@ test "parseServicesFromSource: single service" {
 
     try std.testing.expectEqual(@as(usize, 1), services.len);
     try std.testing.expectEqualStrings("db", services[0]);
+}
+
+// --- extractComposeFilesFromArgs tests ---
+
+test "extractComposeFilesFromArgs: docker compose -f" {
+    const allocator = std.testing.allocator;
+    const args = &[_][]const u8{ "docker", "compose", "-f", "custom.yml", "up" };
+    const result = try extractComposeFilesFromArgs(allocator, args);
+    defer if (result) |r| allocator.free(r);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(usize, 1), result.?.len);
+    try std.testing.expectEqualStrings("custom.yml", result.?[0]);
+}
+
+test "extractComposeFilesFromArgs: podman compose --file" {
+    const allocator = std.testing.allocator;
+    const args = &[_][]const u8{ "podman", "compose", "--file", "my-compose.yaml", "up", "-d" };
+    const result = try extractComposeFilesFromArgs(allocator, args);
+    defer if (result) |r| allocator.free(r);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(usize, 1), result.?.len);
+    try std.testing.expectEqualStrings("my-compose.yaml", result.?[0]);
+}
+
+test "extractComposeFilesFromArgs: multiple -f flags" {
+    const allocator = std.testing.allocator;
+    const args = &[_][]const u8{ "docker", "compose", "-f", "a.yml", "-f", "b.yml", "up" };
+    const result = try extractComposeFilesFromArgs(allocator, args);
+    defer if (result) |r| allocator.free(r);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(usize, 2), result.?.len);
+    try std.testing.expectEqualStrings("a.yml", result.?[0]);
+    try std.testing.expectEqualStrings("b.yml", result.?[1]);
+}
+
+test "extractComposeFilesFromArgs: --file= syntax" {
+    const allocator = std.testing.allocator;
+    const args = &[_][]const u8{ "docker", "compose", "--file=custom.yml", "up" };
+    const result = try extractComposeFilesFromArgs(allocator, args);
+    defer if (result) |r| allocator.free(r);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(usize, 1), result.?.len);
+    try std.testing.expectEqualStrings("custom.yml", result.?[0]);
+}
+
+test "extractComposeFilesFromArgs: docker-compose (single binary)" {
+    const allocator = std.testing.allocator;
+    const args = &[_][]const u8{ "docker-compose", "-f", "test.yml", "up" };
+    const result = try extractComposeFilesFromArgs(allocator, args);
+    defer if (result) |r| allocator.free(r);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("test.yml", result.?[0]);
+}
+
+test "extractComposeFilesFromArgs: no -f flag returns null" {
+    const allocator = std.testing.allocator;
+    const args = &[_][]const u8{ "docker", "compose", "up" };
+    const result = try extractComposeFilesFromArgs(allocator, args);
+    try std.testing.expect(result == null);
+}
+
+test "extractComposeFilesFromArgs: any command with -f" {
+    const allocator = std.testing.allocator;
+    const args = &[_][]const u8{ "make", "-f", "Makefile", "build" };
+    const result = try extractComposeFilesFromArgs(allocator, args);
+    defer if (result) |r| allocator.free(r);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("Makefile", result.?[0]);
+}
+
+test "extractComposeFilesFromArgs: empty args" {
+    const allocator = std.testing.allocator;
+    const args = &[_][]const u8{};
+    const result = try extractComposeFilesFromArgs(allocator, args);
+    try std.testing.expect(result == null);
 }
 
 test "findComposeFile: file not found" {

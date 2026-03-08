@@ -54,7 +54,6 @@ fn printMainHelp() void {
 
 fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
     var project_name: ?[]const u8 = null;
-    var compose_file_opt: ?[]const u8 = null;
     var cmd_args: std.ArrayListUnmanaged([]const u8) = .{};
     defer cmd_args.deinit(allocator);
 
@@ -64,11 +63,6 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
             if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
                 printRunHelp();
                 return;
-            } else if (std.mem.eql(u8, arg, "--file") or std.mem.eql(u8, arg, "-f")) {
-                compose_file_opt = args.next() orelse {
-                    std.debug.print("Error: --file requires a value\n", .{});
-                    return error.MissingValue;
-                };
             } else if (std.mem.eql(u8, arg, "--")) {
                 parsing_options = false;
             } else if (project_name == null) {
@@ -95,17 +89,40 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
         return error.MissingCommand;
     }
 
-    // 1. Detect and parse compose file
+    // 1. Detect and parse compose file(s)
     const cwd = std.fs.cwd();
-    const compose_file = compose_file_opt orelse compose.findComposeFile(cwd) catch |err| {
-        std.debug.print("Error: compose file not found. Place a docker-compose.yml or compose.yml in the current directory.\n", .{});
-        return err;
-    };
 
-    const services = compose.parseServices(allocator, cwd, compose_file) catch |err| {
-        std.debug.print("Error: failed to parse compose file '{s}'\n", .{compose_file});
-        return err;
-    };
+    const extracted_files = try compose.extractComposeFilesFromArgs(allocator, cmd_args.items);
+    defer if (extracted_files) |files| allocator.free(files);
+
+    var services: []const []const u8 = &.{};
+    if (extracted_files) |files| {
+        // Parse services from all specified compose files
+        var all_services: std.ArrayListUnmanaged([]const u8) = .{};
+        errdefer {
+            for (all_services.items) |s| allocator.free(s);
+            all_services.deinit(allocator);
+        }
+        for (files) |file| {
+            const file_services = compose.parseServices(allocator, cwd, file) catch |err| {
+                std.debug.print("Error: failed to parse compose file '{s}'\n", .{file});
+                return err;
+            };
+            defer allocator.free(file_services);
+            try all_services.appendSlice(allocator, file_services);
+        }
+        services = try all_services.toOwnedSlice(allocator);
+    } else {
+        // Fall back to auto-detection
+        const compose_file = compose.findComposeFile(cwd) catch |err| {
+            std.debug.print("Error: compose file not found. Place a docker-compose.yml or compose.yml in the current directory, or use -f flag in your compose command.\n", .{});
+            return err;
+        };
+        services = compose.parseServices(allocator, cwd, compose_file) catch |err| {
+            std.debug.print("Error: failed to parse compose file '{s}'\n", .{compose_file});
+            return err;
+        };
+    }
     defer compose.freeServices(allocator, services);
 
     if (services.len == 0) {
@@ -198,14 +215,21 @@ fn printRunHelp() void {
         \\Usage: dockportless run [options] <project_name> <command...>
         \\
         \\Run a command with auto-assigned ports for compose services.
+        \\Compose files are detected from the command's -f/--file flags
+        \\(docker compose / podman compose). Falls back to auto-detection
+        \\from the current directory if no -f flag is found.
         \\
         \\Arguments:
         \\  project_name  Name of the project
-        \\  command...    Command to execute
+        \\  command...    Command to execute (e.g. docker compose up)
         \\
         \\Options:
-        \\  -f, --file <path>  Path to compose file
-        \\  -h, --help         Show this help message
+        \\  -h, --help  Show this help message
+        \\
+        \\Examples:
+        \\  dockportless run myapp docker compose up
+        \\  dockportless run myapp docker compose -f custom.yml up
+        \\  dockportless run myapp podman compose -f a.yml -f b.yml up
         \\
     ) catch {};
 }

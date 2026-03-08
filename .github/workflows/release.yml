@@ -11,6 +11,7 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    environment: Release
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,10 +19,26 @@ jobs:
 
       - uses: jdx/mise-action@v2
 
+      - name: Generate a token
+        id: generate-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          repositories: |
+            dockportless
+            homebrew-tap
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: "~> v2"
           args: release --clean
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: assets
+          path: dist/

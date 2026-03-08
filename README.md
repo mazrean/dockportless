@@ -193,6 +193,18 @@ See the [`examples/`](examples/) directory:
 | [multi-project](examples/multi-project/) | Frontend and backend as separate projects |
 | [custom-compose-file](examples/custom-compose-file/) | Using `-f` flag with different compose files |
 
+## Agent Skill
+
+An [Agent Skill](skills/verifying-dockportless/) is included for AI coding agents (e.g. Claude Code). It automates launching and verifying dev environments with dockportless, deriving worktree-unique project names to avoid port collisions during parallel development with git worktrees.
+
+You can install it using [`skills`](https://github.com/vercel-labs/skills) CLI:
+
+```bash
+npx skills add mazrean/dockportless --skill verifying-dockportless
+```
+
+Or manually copy the [`skills/verifying-dockportless/`](skills/verifying-dockportless/) directory into your project's or user's skill directory.
+
 ## Supported Platforms
 
 | Platform | Architecture |

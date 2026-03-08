@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v3
 
       - name: Check formatting
         run: zig fmt --check src/
@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v3
 
       - name: Run tests
         run: zig build test
@@ -35,7 +35,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v3
 
       - uses: goreleaser/goreleaser-action@v6
         with:

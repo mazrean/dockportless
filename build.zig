@@ -131,18 +131,4 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(cert_tests).step);
 
-    // tcp_proxy tests need OpenSSL
-    const tcp_proxy_test_module = b.createModule(.{
-        .root_source_file = b.path("src/tcp_proxy.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    tcp_proxy_test_module.linkSystemLibrary("ssl", .{});
-    tcp_proxy_test_module.linkSystemLibrary("crypto", .{});
-
-    const tcp_proxy_tests = b.addTest(.{
-        .root_module = tcp_proxy_test_module,
-    });
-    test_step.dependOn(&b.addRunArtifact(tcp_proxy_tests).step);
 }

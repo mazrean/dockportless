@@ -1,12 +1,20 @@
 const std = @import("std");
 const posix = std.posix;
 const mapping = @import("mapping.zig");
-const tcp_proxy = @import("tcp_proxy.zig");
+const cert = @import("cert.zig");
 
 const Allocator = std.mem.Allocator;
 
+const c = @cImport({
+    @cInclude("openssl/ssl.h");
+    @cInclude("openssl/err.h");
+    @cInclude("sys/socket.h");
+});
+
 pub const PROXY_PORT: u16 = 7355;
-pub const PROXY_TLS_PORT: u16 = tcp_proxy.PROXY_TLS_PORT;
+
+/// TLS record content type for Handshake
+const TLS_CONTENT_TYPE_HANDSHAKE: u8 = 0x16;
 
 pub const HostInfo = struct {
     service: []const u8,
@@ -68,6 +76,117 @@ fn createListenSocket() !posix.socket_t {
     return sock;
 }
 
+/// Set socket receive timeout.
+fn setRecvTimeout(fd: posix.socket_t, seconds: u32) void {
+    const tv = posix.timeval{ .sec = @intCast(seconds), .usec = 0 };
+    posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
+}
+
+/// Peek at the first byte without consuming it to detect TLS vs HTTP.
+fn peekFirstByte(fd: posix.socket_t) !u8 {
+    var buf: [1]u8 = undefined;
+    const n = c.recv(@intCast(fd), &buf, 1, c.MSG_PEEK);
+    if (n <= 0) return error.PeekFailed;
+    return buf[0];
+}
+
+const ClientContext = struct {
+    client_fd: posix.socket_t,
+    allocator: Allocator,
+    ssl_ctx: *c.SSL_CTX,
+    mapping_dir_path: []const u8,
+};
+
+fn clientThread(ctx: ClientContext) void {
+    defer posix.close(ctx.client_fd);
+
+    setRecvTimeout(ctx.client_fd, 10);
+
+    // Detect protocol by peeking at first byte
+    const first_byte = peekFirstByte(ctx.client_fd) catch return;
+
+    if (first_byte == TLS_CONTENT_TYPE_HANDSHAKE) {
+        handleTlsClient(ctx) catch |err| {
+            std.debug.print("TLS client error: {}\n", .{err});
+        };
+    } else {
+        handleHttpClient(ctx.allocator, ctx.client_fd, ctx.mapping_dir_path) catch |err| {
+            std.debug.print("HTTP client error: {}\n", .{err});
+        };
+    }
+}
+
+/// Start the unified proxy server (blocking).
+pub fn start(allocator: Allocator, mapping_dir_path: []const u8, cert_paths: cert.CertPaths) !void {
+    // Initialize OpenSSL TLS context
+    const method = c.TLS_server_method() orelse return error.SslInitFailed;
+    const ssl_ctx = c.SSL_CTX_new(method) orelse return error.SslCtxFailed;
+    defer c.SSL_CTX_free(ssl_ctx);
+
+    // Load certificate and private key
+    const cert_path_z = try allocator.dupeZ(u8, cert_paths.server_cert);
+    defer allocator.free(cert_path_z);
+    const key_path_z = try allocator.dupeZ(u8, cert_paths.server_key);
+    defer allocator.free(key_path_z);
+
+    if (c.SSL_CTX_use_certificate_chain_file(ssl_ctx, cert_path_z.ptr) != 1) {
+        return error.SslCertLoadFailed;
+    }
+    if (c.SSL_CTX_use_PrivateKey_file(ssl_ctx, key_path_z.ptr, c.SSL_FILETYPE_PEM) != 1) {
+        return error.SslKeyLoadFailed;
+    }
+
+    const listen_fd = try createListenSocket();
+    defer posix.close(listen_fd);
+
+    std.debug.print("Proxy server listening on :{d} (HTTP + TLS)\n", .{PROXY_PORT});
+
+    while (true) {
+        var client_addr: posix.sockaddr = undefined;
+        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr);
+
+        const client_fd = posix.accept(listen_fd, &client_addr, &addr_len, 0) catch continue;
+
+        const ctx = ClientContext{
+            .client_fd = client_fd,
+            .allocator = allocator,
+            .ssl_ctx = ssl_ctx,
+            .mapping_dir_path = mapping_dir_path,
+        };
+
+        const thread = std.Thread.spawn(.{}, clientThread, .{ctx}) catch {
+            posix.close(client_fd);
+            continue;
+        };
+        thread.detach();
+    }
+}
+
+// ---- HTTP handling ----
+
+fn handleHttpClient(allocator: Allocator, client_fd: posix.socket_t, mapping_dir_path: []const u8) !void {
+    const result = try readRequestAndExtractHost(allocator, client_fd);
+    defer {
+        const ptr: [*]u8 = @constCast(result.request_data.ptr);
+        allocator.free(ptr[0..8192]);
+    }
+
+    const host_info = parseHost(result.host) orelse {
+        sendErrorResponse(client_fd, "404 Not Found", "Unknown host");
+        return;
+    };
+
+    const mappings = try mapping.readAllMappings(allocator, mapping_dir_path);
+    defer mapping.freeAllMappings(allocator, mappings);
+
+    const backend_port = findBackendPort(mappings, host_info.project, host_info.service) orelse {
+        sendErrorResponse(client_fd, "404 Not Found", "Service not found");
+        return;
+    };
+
+    try forwardHttpRequest(allocator, client_fd, result.request_data, backend_port);
+}
+
 /// Read an HTTP request and extract the Host header.
 fn readRequestAndExtractHost(allocator: Allocator, client_fd: posix.socket_t) !struct { host: []const u8, request_data: []u8 } {
     var buf = try allocator.alloc(u8, 8192);
@@ -81,11 +200,9 @@ fn readRequestAndExtractHost(allocator: Allocator, client_fd: posix.socket_t) !s
         if (n == 0) return error.ConnectionClosed;
         total_read += n;
 
-        // Check if we have the complete headers (look for \r\n\r\n)
         if (std.mem.indexOf(u8, buf[0..total_read], "\r\n\r\n")) |_| break;
     }
 
-    // Extract Host header
     const headers = buf[0..total_read];
     const host = extractHostHeader(headers) orelse return error.NoHostHeader;
 
@@ -108,14 +225,7 @@ fn extractHostHeader(headers: []const u8) ?[]const u8 {
     return null;
 }
 
-/// Set socket receive timeout.
-fn setRecvTimeout(fd: posix.socket_t, seconds: u32) void {
-    const tv = posix.timeval{ .sec = @intCast(seconds), .usec = 0 };
-    posix.setsockopt(fd, posix.SOL.SOCKET, posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
-}
-
-/// Forward the request to the backend service.
-fn forwardRequest(allocator: Allocator, client_fd: posix.socket_t, request_data: []const u8, backend_port: u16) !void {
+fn forwardHttpRequest(allocator: Allocator, client_fd: posix.socket_t, request_data: []const u8, backend_port: u16) !void {
     const backend_addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, backend_port);
     const backend_fd = try posix.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
     defer posix.close(backend_fd);
@@ -125,16 +235,13 @@ fn forwardRequest(allocator: Allocator, client_fd: posix.socket_t, request_data:
         return;
     };
 
-    // Set receive timeout on backend to avoid hanging on keep-alive connections
     setRecvTimeout(backend_fd, 5);
 
-    // Forward the request
     _ = posix.write(backend_fd, request_data) catch {
         sendErrorResponse(client_fd, "502 Bad Gateway", "Failed to forward request");
         return;
     };
 
-    // Read and forward the response
     var buf = try allocator.alloc(u8, 65536);
     defer allocator.free(buf);
 
@@ -151,76 +258,90 @@ fn sendErrorResponse(client_fd: posix.socket_t, status: []const u8, body: []cons
     _ = posix.write(client_fd, response) catch {};
 }
 
-const ClientContext = struct {
-    client_fd: posix.socket_t,
-    allocator: Allocator,
-    mapping_dir_path: []const u8,
-};
+// ---- TLS handling ----
 
-fn clientThread(ctx: ClientContext) void {
-    defer posix.close(ctx.client_fd);
+fn handleTlsClient(ctx: ClientContext) !void {
+    const ssl_obj = c.SSL_new(ctx.ssl_ctx) orelse return error.SslNewFailed;
+    defer c.SSL_free(ssl_obj);
 
-    // Set receive timeout on client socket
-    setRecvTimeout(ctx.client_fd, 10);
+    _ = c.SSL_set_fd(ssl_obj, @intCast(ctx.client_fd));
 
-    handleClient(ctx.allocator, ctx.client_fd, ctx.mapping_dir_path) catch |err| {
-        std.debug.print("Error handling client: {}\n", .{err});
-    };
-}
-
-/// Start the proxy server (blocking).
-pub fn start(allocator: Allocator, mapping_dir_path: []const u8) !void {
-    const listen_fd = try createListenSocket();
-    defer posix.close(listen_fd);
-
-    std.debug.print("Proxy server listening on :{d}\n", .{PROXY_PORT});
-
-    while (true) {
-        var client_addr: posix.sockaddr = undefined;
-        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr);
-
-        const client_fd = posix.accept(listen_fd, &client_addr, &addr_len, 0) catch continue;
-
-        const ctx = ClientContext{
-            .client_fd = client_fd,
-            .allocator = allocator,
-            .mapping_dir_path = mapping_dir_path,
-        };
-
-        const thread = std.Thread.spawn(.{}, clientThread, .{ctx}) catch {
-            posix.close(client_fd);
-            continue;
-        };
-        thread.detach();
-    }
-}
-
-fn handleClient(allocator: Allocator, client_fd: posix.socket_t, mapping_dir_path: []const u8) !void {
-    const result = try readRequestAndExtractHost(allocator, client_fd);
-    // request_data is a slice into a larger allocation; we need to track the original buf
-    defer {
-        // The buf was allocated with 8192 bytes, but we only got a slice
-        // We need to free the original allocation
-        // Since request_data points into the allocated buffer, we can reconstruct the pointer
-        const ptr: [*]u8 = @constCast(result.request_data.ptr);
-        allocator.free(ptr[0..8192]);
+    // TLS handshake
+    if (c.SSL_accept(ssl_obj) != 1) {
+        return error.SslAcceptFailed;
     }
 
-    const host_info = parseHost(result.host) orelse {
-        sendErrorResponse(client_fd, "404 Not Found", "Unknown host");
-        return;
+    // Get SNI hostname
+    const servername = c.SSL_get_servername(ssl_obj, c.TLSEXT_NAMETYPE_host_name) orelse {
+        return error.NoSni;
+    };
+    const hostname = std.mem.span(servername);
+
+    const host_info = parseHost(hostname) orelse {
+        return error.InvalidHost;
     };
 
-    // Read current mappings
-    const mappings = try mapping.readAllMappings(allocator, mapping_dir_path);
-    defer mapping.freeAllMappings(allocator, mappings);
+    // Look up backend port
+    const mappings = try mapping.readAllMappings(ctx.allocator, ctx.mapping_dir_path);
+    defer mapping.freeAllMappings(ctx.allocator, mappings);
 
     const backend_port = findBackendPort(mappings, host_info.project, host_info.service) orelse {
-        sendErrorResponse(client_fd, "404 Not Found", "Service not found");
-        return;
+        return error.ServiceNotFound;
     };
 
-    try forwardRequest(allocator, client_fd, result.request_data, backend_port);
+    // Connect to backend (plain TCP)
+    const backend_addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, backend_port);
+    const backend_fd = try posix.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    defer posix.close(backend_fd);
+
+    posix.connect(backend_fd, &backend_addr.any, backend_addr.getOsSockLen()) catch {
+        return error.BackendConnectionFailed;
+    };
+
+    // Bidirectional forwarding: TLS client <-> plain TCP backend
+    forwardBidirectional(ssl_obj, ctx.client_fd, backend_fd);
+
+    _ = c.SSL_shutdown(ssl_obj);
+}
+
+/// Poll-based bidirectional forwarding between TLS client and plain TCP backend.
+fn forwardBidirectional(ssl_obj: *c.SSL, client_fd: posix.socket_t, backend_fd: posix.socket_t) void {
+    var client_buf: [65536]u8 = undefined;
+    var backend_buf: [65536]u8 = undefined;
+
+    while (true) {
+        var fds = [2]posix.pollfd{
+            .{ .fd = client_fd, .events = posix.POLL.IN, .revents = 0 },
+            .{ .fd = backend_fd, .events = posix.POLL.IN, .revents = 0 },
+        };
+
+        const ssl_pending = c.SSL_pending(ssl_obj);
+        const timeout: i32 = if (ssl_pending > 0) 0 else 60_000;
+
+        const ready = posix.poll(&fds, timeout) catch break;
+
+        if (ready == 0 and ssl_pending <= 0) break;
+
+        // Client → Backend (TLS read → plain write)
+        if (ssl_pending > 0 or (ready > 0 and (fds[0].revents & posix.POLL.IN != 0))) {
+            const n = c.SSL_read(ssl_obj, &client_buf, @intCast(client_buf.len));
+            if (n <= 0) break;
+            _ = posix.write(backend_fd, client_buf[0..@intCast(n)]) catch break;
+        }
+
+        // Backend → Client (plain read → TLS write)
+        if (ready > 0 and (fds[1].revents & (posix.POLL.IN | posix.POLL.HUP) != 0)) {
+            const n = posix.read(backend_fd, &backend_buf) catch break;
+            if (n == 0) break;
+            const written = c.SSL_write(ssl_obj, &backend_buf, @intCast(n));
+            if (written <= 0) break;
+        }
+
+        if (ready > 0) {
+            if (fds[0].revents & posix.POLL.ERR != 0) break;
+            if (fds[1].revents & posix.POLL.ERR != 0) break;
+        }
+    }
 }
 
 // --- Tests ---

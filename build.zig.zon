@@ -11,6 +11,10 @@
             .url = "https://github.com/kubkon/zig-yaml/archive/refs/tags/0.2.0.tar.gz",
             .hash = "zig_yaml-0.2.0-C1161pmrAgC_rL9WzjvgNg7HnmyAMwHsG3Sre0F4haPI",
         },
+        .openssl = .{
+            .url = "git+https://github.com/mazrean/openssl#9ed00b6c49b4a10bbb5d796fdd53edf294303d80",
+            .hash = "openssl-3.3.2-TC9C3ai8ZABz5dvp3GsY53wK9X6eip9vPWZ101Nd-snV",
+        },
     },
     .paths = .{
         "build.zig",

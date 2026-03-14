@@ -6,6 +6,10 @@ pub fn build(b: *std.Build) void {
 
     const clap = b.dependency("clap", .{});
     const zig_yaml = b.dependency("zig_yaml", .{});
+    const openssl = b.dependency("openssl", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     const root_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -17,8 +21,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "yaml", .module = zig_yaml.module("yaml") },
         },
     });
-    root_module.linkSystemLibrary("ssl", .{});
-    root_module.linkSystemLibrary("crypto", .{});
+    root_module.linkLibrary(openssl.artifact("openssl"));
 
     const exe = b.addExecutable(.{
         .name = "dockportless",
@@ -47,8 +50,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "yaml", .module = zig_yaml.module("yaml") },
         },
     });
-    main_test_module.linkSystemLibrary("ssl", .{});
-    main_test_module.linkSystemLibrary("crypto", .{});
+    main_test_module.linkLibrary(openssl.artifact("openssl"));
 
     const exe_unit_tests = b.addTest(.{
         .root_module = main_test_module,
@@ -104,8 +106,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    proxy_test_module.linkSystemLibrary("ssl", .{});
-    proxy_test_module.linkSystemLibrary("crypto", .{});
+    proxy_test_module.linkLibrary(openssl.artifact("openssl"));
 
     const proxy_tests = b.addTest(.{
         .root_module = proxy_test_module,
@@ -121,13 +122,17 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(watcher_tests).step);
 
-    // cert tests
+    // cert tests need OpenSSL because cert.zig uses OpenSSL C API
+    const cert_test_module = b.createModule(.{
+        .root_source_file = b.path("src/cert.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    cert_test_module.linkLibrary(openssl.artifact("openssl"));
+
     const cert_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/cert.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = cert_test_module,
     });
     test_step.dependOn(&b.addRunArtifact(cert_tests).step);
 

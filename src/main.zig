@@ -194,7 +194,7 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
     defer cert.freeCertPaths(allocator, &cert_paths);
 
     // Install CA cert to system trust store
-    cert.installCaCert(allocator, cert_paths.ca_cert);
+    cert.installCaCert(cert_paths.ca_cert);
 
     // Print service URLs
     for (services, ports) |svc_name, svc_port| {
@@ -291,7 +291,7 @@ fn proxyCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void 
     defer cert.freeCertPaths(allocator, &cert_paths);
 
     // Install CA cert to system trust store
-    cert.installCaCert(allocator, cert_paths.ca_cert);
+    cert.installCaCert(cert_paths.ca_cert);
 
     std.debug.print("Starting proxy servers\n", .{});
     std.debug.print("  HTTP: :{d}\n", .{proxy.PROXY_PORT});

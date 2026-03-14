@@ -209,26 +209,70 @@ fn writePemCert(allocator: Allocator, path: []const u8, x509: *c.X509) !void {
 }
 
 /// Install CA certificate to system trust store using filesystem operations.
+/// This is a best-effort attempt without elevated privileges.
 pub fn installCaCert(ca_cert_path: []const u8) void {
     // Read CA cert content
     const content = readFileContent(ca_cert_path) orelse return;
 
     // Try Debian/Ubuntu path
     if (tryCopyCert(content, "/usr/local/share/ca-certificates/dockportless-ca.crt")) {
-        std.debug.print("CA certificate copied to /usr/local/share/ca-certificates/\n", .{});
-        std.debug.print("Run 'sudo update-ca-certificates' to trust it system-wide\n", .{});
+        std.debug.print("CA certificate installed to system trust store\n", .{});
         return;
     }
 
     // Try RHEL/Fedora path
     if (tryCopyCert(content, "/etc/pki/ca-trust/source/anchors/dockportless-ca.crt")) {
-        std.debug.print("CA certificate copied to /etc/pki/ca-trust/source/anchors/\n", .{});
-        std.debug.print("Run 'sudo update-ca-trust' to trust it system-wide\n", .{});
+        std.debug.print("CA certificate installed to system trust store\n", .{});
         return;
     }
 
     std.debug.print("CA certificate: {s}\n", .{ca_cert_path});
-    std.debug.print("Trust it manually or pass via --cacert / TLS config\n", .{});
+    std.debug.print("Run 'sudo dockportless trust' to trust it system-wide\n", .{});
+}
+
+/// Install CA certificate to system trust store with sudo.
+/// Intended to be called from the `trust` subcommand run with elevated privileges.
+pub fn installCaCertPrivileged(allocator: Allocator, ca_cert_path: []const u8) !void {
+    const content = readFileContent(ca_cert_path) orelse return error.CaCertReadFailed;
+
+    // Try Debian/Ubuntu
+    if (tryCopyCert(content, "/usr/local/share/ca-certificates/dockportless-ca.crt")) {
+        var child = std.process.Child.init(&.{"update-ca-certificates"}, allocator);
+        child.stderr_behavior = .Inherit;
+        child.stdout_behavior = .Inherit;
+        try child.spawn();
+        const term = try child.wait();
+        switch (term) {
+            .Exited => |code| {
+                if (code == 0) {
+                    std.debug.print("CA certificate installed and trusted (Debian/Ubuntu)\n", .{});
+                    return;
+                }
+            },
+            else => {},
+        }
+    }
+
+    // Try RHEL/Fedora
+    if (tryCopyCert(content, "/etc/pki/ca-trust/source/anchors/dockportless-ca.crt")) {
+        var child = std.process.Child.init(&.{"update-ca-trust"}, allocator);
+        child.stderr_behavior = .Inherit;
+        child.stdout_behavior = .Inherit;
+        try child.spawn();
+        const term = try child.wait();
+        switch (term) {
+            .Exited => |code| {
+                if (code == 0) {
+                    std.debug.print("CA certificate installed and trusted (RHEL/Fedora)\n", .{});
+                    return;
+                }
+            },
+            else => {},
+        }
+    }
+
+    std.debug.print("Error: could not install CA certificate to system trust store\n", .{});
+    return error.TrustInstallFailed;
 }
 
 fn readFileContent(path: []const u8) ?[]const u8 {

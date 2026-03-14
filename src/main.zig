@@ -31,6 +31,8 @@ pub fn main() !void {
         return runCmd(allocator, &args);
     } else if (std.mem.eql(u8, subcmd, "proxy")) {
         return proxyCmd(allocator, &args);
+    } else if (std.mem.eql(u8, subcmd, "trust")) {
+        return trustCmd(allocator, &args);
     } else if (std.mem.eql(u8, subcmd, "--help") or std.mem.eql(u8, subcmd, "-h")) {
         printMainHelp();
     } else {
@@ -47,6 +49,7 @@ fn printMainHelp() void {
         \\Commands:
         \\  run    Run a command with auto-assigned ports
         \\  proxy  Start the proxy server
+        \\  trust  Install CA certificate to system trust store
         \\
         \\Options:
         \\  -h, --help  Show this help message
@@ -307,6 +310,38 @@ fn proxyCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void 
 
     // Start HTTP proxy server (blocking)
     try proxy.start(allocator, mapping_dir_path);
+}
+
+fn trustCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            printTrustHelp();
+            return;
+        }
+    }
+
+    // Ensure certificates exist
+    var cert_paths = cert.ensureCerts(allocator) catch |err| {
+        std.debug.print("Error: failed to generate TLS certificates: {}\n", .{err});
+        return err;
+    };
+    defer cert.freeCertPaths(allocator, &cert_paths);
+
+    // Install with elevated privileges
+    try cert.installCaCertPrivileged(allocator, cert_paths.ca_cert);
+}
+
+fn printTrustHelp() void {
+    stdout.writeAll(
+        \\Usage: sudo dockportless trust [options]
+        \\
+        \\Install the dockportless CA certificate to the system trust store.
+        \\Requires elevated privileges (sudo).
+        \\
+        \\Options:
+        \\  -h, --help  Show this help message
+        \\
+    ) catch {};
 }
 
 fn printProxyHelp() void {

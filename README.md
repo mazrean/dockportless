@@ -19,6 +19,8 @@ Inspired by [vercel/portless](https://github.com/vercel-labs/portless) — the s
 
 - **Zero-config port management** — Automatically assigns available ports, no collisions
 - **Pretty local URLs** — Access services at `web.myapp.localhost:7355` instead of `localhost:49152`
+- **TLS SNI routing** — Automatic protocol detection for HTTP, HTTPS, and PostgreSQL SSL with TLS termination
+- **Multi-port support** — Services exposing multiple ports get indexed URLs (`0.web.myapp.localhost`, `1.web.myapp.localhost`)
 - **Parallel worktree support** — Develop multiple features simultaneously across git worktrees without port conflicts
 - **Agent-friendly** — Includes an [Agent Skill](#agent-skill) for AI coding agents to automate dev environment setup
 - **Single binary** — Built in Zig, no runtime dependencies
@@ -140,6 +142,65 @@ Starts only the proxy server. This is only needed when the proxy process is rest
 dockportless proxy
 ```
 
+### `dockportless trust`
+
+Installs the dockportless CA certificate into your system trust store. Required for TLS SNI routing (HTTPS and PostgreSQL SSL). Needs elevated privileges.
+
+```bash
+sudo dockportless trust
+```
+
+Supported trust stores:
+- **Linux**: Debian/Ubuntu, RHEL/Fedora, Arch Linux, SUSE
+- **macOS**: System Keychain
+
+## TLS SNI Routing
+
+dockportless automatically detects the protocol of incoming connections and routes them accordingly:
+
+- **HTTP** — Routed by `Host` header
+- **TLS (HTTPS)** — Routed by SNI hostname with TLS termination
+- **PostgreSQL SSL** — Detects `SSLRequest`, upgrades to TLS, then routes by SNI
+
+To use TLS routing, first install the CA certificate:
+
+```bash
+sudo dockportless trust
+```
+
+Then access your services over HTTPS:
+
+```
+https://web.myapp.localhost:7355
+```
+
+For PostgreSQL SSL connections:
+
+```bash
+psql "host=db.myapp.localhost port=7355 sslmode=require"
+```
+
+## Multi-Port Services
+
+When a service exposes multiple ports, dockportless assigns indexed environment variables and URLs:
+
+```yaml
+services:
+  web:
+    image: myapp
+    ports:
+      - "${WEB_PORT_0:-8080}:8080"   # HTTP
+      - "${WEB_PORT_1:-8443}:8443"   # HTTPS
+```
+
+Access each port via its index prefix:
+
+- `http://web.myapp.localhost:7355` → port index 0 (no prefix needed)
+- `http://1.web.myapp.localhost:7355` → port index 1
+
+> [!NOTE]
+> `WEB_PORT` is an alias for `WEB_PORT_0`. For single-port services, everything works the same as before.
+
 ## Parallel Development with Git Worktrees
 
 dockportless is designed for developing multiple features in parallel using [git worktrees](https://git-scm.com/docs/git-worktree). Each worktree gets its own project name, ports, and proxy routes — no collisions, no coordination needed.
@@ -167,8 +228,11 @@ All services are accessible through the same port, namespaced by project:
 
 ```mermaid
 flowchart TD
-    A["Browser<br/>http://web.myapp.localhost:7355"] --> B["dockportless<br/>reverse proxy on :7355"]
-    B -- "resolve Host<br/>web.myapp → :54321" --> C["localhost:54321<br/>(auto-assigned port)"]
+    A["Client request<br/>web.myapp.localhost:7355"] --> B["dockportless proxy<br/>on :7355"]
+    B -- "detect protocol" --> D{Protocol?}
+    D -- "HTTP<br/>(Host header)" --> C["localhost:54321<br/>(auto-assigned port)"]
+    D -- "TLS<br/>(SNI hostname)" --> E["TLS termination"] --> C
+    D -- "PostgreSQL<br/>(SSLRequest)" --> F["SSL upgrade + SNI"] --> C
 ```
 
 ## Examples
@@ -179,8 +243,11 @@ See the [`examples/`](examples/) directory:
 |---------|-------------|
 | [simple-web](examples/simple-web/) | Single nginx service |
 | [multi-service](examples/multi-service/) | Web + API + DB |
+| [multi-port](examples/multi-port/) | Single service with multiple ports |
 | [multi-project](examples/multi-project/) | Parallel worktrees simulated with separate project names |
 | [custom-compose-file](examples/custom-compose-file/) | Using `-f` flag with different compose files |
+| [tls-sni](examples/tls-sni/) | HTTPS routing with TLS SNI termination |
+| [postgres-ssl](examples/postgres-ssl/) | PostgreSQL SSL routing |
 
 ## Agent Skill
 

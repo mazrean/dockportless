@@ -208,7 +208,11 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
     // Print service URLs
     for (services, service_mappings) |svc, sm| {
         for (sm.ports, 0..) |p, idx| {
-            std.debug.print("  {d}.{s}.{s}.localhost:{d} -> :{d}\n", .{ idx, svc.name, proj_name, proxy.PROXY_PORT, p });
+            if (idx == 0) {
+                std.debug.print("  {s}.{s}.localhost:{d} -> :{d}\n", .{ svc.name, proj_name, proxy.PROXY_PORT, p });
+            } else {
+                std.debug.print("  {d}.{s}.{s}.localhost:{d} -> :{d}\n", .{ idx, svc.name, proj_name, proxy.PROXY_PORT, p });
+            }
         }
     }
 

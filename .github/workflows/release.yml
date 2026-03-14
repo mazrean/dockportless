@@ -17,6 +17,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Install OpenSSL development libraries
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+
       - uses: jdx/mise-action@v2
 
       - name: Generate a token

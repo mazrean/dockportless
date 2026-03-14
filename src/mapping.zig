@@ -5,7 +5,7 @@ const Allocator = std.mem.Allocator;
 
 pub const ServiceMapping = struct {
     service_name: []const u8,
-    port: u16,
+    ports: []const u16,
 };
 
 pub const ProjectMapping = struct {
@@ -35,7 +35,7 @@ pub fn writeMapping(allocator: Allocator, dir: std.fs.Dir, project: ProjectMappi
     for (project.services, 0..) |svc, i| {
         json_services[i] = .{
             .service_name = svc.service_name,
-            .port = svc.port,
+            .ports = svc.ports,
         };
     }
 
@@ -99,7 +99,7 @@ fn readSingleMapping(allocator: Allocator, dir: std.fs.Dir, filename: []const u8
     for (v.services, 0..) |svc, i| {
         services[i] = .{
             .service_name = try allocator.dupe(u8, svc.service_name),
-            .port = svc.port,
+            .ports = try allocator.dupe(u16, svc.ports),
         };
     }
 
@@ -121,12 +121,13 @@ pub fn removeMapping(allocator: Allocator, dir: std.fs.Dir, project_name: []cons
     };
 }
 
-pub fn freeMappingContents(allocator: Allocator, mapping: *ProjectMapping) void {
-    for (mapping.services) |svc| {
+pub fn freeMappingContents(allocator: Allocator, m: *ProjectMapping) void {
+    for (m.services) |svc| {
         allocator.free(svc.service_name);
+        allocator.free(svc.ports);
     }
-    allocator.free(mapping.services);
-    allocator.free(mapping.project_name);
+    allocator.free(m.services);
+    allocator.free(m.project_name);
 }
 
 pub fn freeAllMappings(allocator: Allocator, mappings: []ProjectMapping) void {
@@ -139,7 +140,7 @@ pub fn freeAllMappings(allocator: Allocator, mappings: []ProjectMapping) void {
 // JSON serialization types
 const JsonService = struct {
     service_name: []const u8,
-    port: u16,
+    ports: []const u16,
 };
 
 const JsonMapping = struct {
@@ -163,9 +164,11 @@ test "writeMapping and readAllMappings round-trip" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_path = try tmpDirPath(&tmp, &path_buf);
 
+    const web_ports = &[_]u16{ 49152, 49154 };
+    const api_ports = &[_]u16{49153};
     const services = &[_]ServiceMapping{
-        .{ .service_name = "web", .port = 49152 },
-        .{ .service_name = "api", .port = 49153 },
+        .{ .service_name = "web", .ports = web_ports },
+        .{ .service_name = "api", .ports = api_ports },
     };
 
     const project = ProjectMapping{
@@ -184,9 +187,12 @@ test "writeMapping and readAllMappings round-trip" {
     try std.testing.expectEqual(@as(i32, 12345), mappings[0].pid);
     try std.testing.expectEqual(@as(usize, 2), mappings[0].services.len);
     try std.testing.expectEqualStrings("web", mappings[0].services[0].service_name);
-    try std.testing.expectEqual(@as(u16, 49152), mappings[0].services[0].port);
+    try std.testing.expectEqual(@as(usize, 2), mappings[0].services[0].ports.len);
+    try std.testing.expectEqual(@as(u16, 49152), mappings[0].services[0].ports[0]);
+    try std.testing.expectEqual(@as(u16, 49154), mappings[0].services[0].ports[1]);
     try std.testing.expectEqualStrings("api", mappings[0].services[1].service_name);
-    try std.testing.expectEqual(@as(u16, 49153), mappings[0].services[1].port);
+    try std.testing.expectEqual(@as(usize, 1), mappings[0].services[1].ports.len);
+    try std.testing.expectEqual(@as(u16, 49153), mappings[0].services[1].ports[0]);
 }
 
 test "removeMapping deletes file" {
@@ -195,8 +201,9 @@ test "removeMapping deletes file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
+    const web_ports = &[_]u16{8080};
     const services = &[_]ServiceMapping{
-        .{ .service_name = "web", .port = 8080 },
+        .{ .service_name = "web", .ports = web_ports },
     };
 
     const project = ProjectMapping{

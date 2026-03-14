@@ -1,0 +1,19 @@
+services:
+  web:
+    image: nginx:alpine
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+  api:
+    image: hashicorp/http-echo
+    command: ["-text=hello from api", "-listen=:5678"]
+    ports:
+      - "${API_PORT:-5678}:5678"
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: app
+    ports:
+      - "${DB_PORT:-5432}:5432"

@@ -7,17 +7,22 @@ pub fn build(b: *std.Build) void {
     const clap = b.dependency("clap", .{});
     const zig_yaml = b.dependency("zig_yaml", .{});
 
+    const root_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "clap", .module = clap.module("clap") },
+            .{ .name = "yaml", .module = zig_yaml.module("yaml") },
+        },
+    });
+    root_module.linkSystemLibrary("ssl", .{});
+    root_module.linkSystemLibrary("crypto", .{});
+
     const exe = b.addExecutable(.{
         .name = "dockportless",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "clap", .module = clap.module("clap") },
-                .{ .name = "yaml", .module = zig_yaml.module("yaml") },
-            },
-        }),
+        .root_module = root_module,
     });
 
     b.installArtifact(exe);
@@ -31,16 +36,22 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run dockportless");
     run_step.dependOn(&run_cmd.step);
 
+    // Tests: main (includes proxy, tcp_proxy, cert via imports)
+    const main_test_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "clap", .module = clap.module("clap") },
+            .{ .name = "yaml", .module = zig_yaml.module("yaml") },
+        },
+    });
+    main_test_module.linkSystemLibrary("ssl", .{});
+    main_test_module.linkSystemLibrary("crypto", .{});
+
     const exe_unit_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "clap", .module = clap.module("clap") },
-                .{ .name = "yaml", .module = zig_yaml.module("yaml") },
-            },
-        }),
+        .root_module = main_test_module,
     });
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
@@ -86,12 +97,18 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(executor_tests).step);
 
+    // proxy tests need OpenSSL because proxy.zig imports tcp_proxy.zig
+    const proxy_test_module = b.createModule(.{
+        .root_source_file = b.path("src/proxy.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    proxy_test_module.linkSystemLibrary("ssl", .{});
+    proxy_test_module.linkSystemLibrary("crypto", .{});
+
     const proxy_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/proxy.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = proxy_test_module,
     });
     test_step.dependOn(&b.addRunArtifact(proxy_tests).step);
 
@@ -103,4 +120,29 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(watcher_tests).step);
+
+    // cert tests
+    const cert_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cert.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(cert_tests).step);
+
+    // tcp_proxy tests need OpenSSL
+    const tcp_proxy_test_module = b.createModule(.{
+        .root_source_file = b.path("src/tcp_proxy.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    tcp_proxy_test_module.linkSystemLibrary("ssl", .{});
+    tcp_proxy_test_module.linkSystemLibrary("crypto", .{});
+
+    const tcp_proxy_tests = b.addTest(.{
+        .root_module = tcp_proxy_test_module,
+    });
+    test_step.dependOn(&b.addRunArtifact(tcp_proxy_tests).step);
 }

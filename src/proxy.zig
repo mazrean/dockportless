@@ -1,10 +1,12 @@
 const std = @import("std");
 const posix = std.posix;
 const mapping = @import("mapping.zig");
+const tcp_proxy = @import("tcp_proxy.zig");
 
 const Allocator = std.mem.Allocator;
 
 pub const PROXY_PORT: u16 = 7355;
+pub const PROXY_TLS_PORT: u16 = tcp_proxy.PROXY_TLS_PORT;
 
 pub const HostInfo = struct {
     service: []const u8,

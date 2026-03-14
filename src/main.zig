@@ -7,6 +7,8 @@ const port = @import("port.zig");
 const mapping = @import("mapping.zig");
 const executor = @import("executor.zig");
 const proxy = @import("proxy.zig");
+const tcp_proxy = @import("tcp_proxy.zig");
+const cert = @import("cert.zig");
 
 const stdout = std.fs.File{ .handle = posix.STDOUT_FILENO };
 
@@ -184,17 +186,35 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
         mapping.removeMapping(allocator, mapping_dir, proj_name) catch {};
     }
 
+    // Ensure TLS certificates
+    var cert_paths = cert.ensureCerts(allocator) catch |err| {
+        std.debug.print("Warning: failed to generate TLS certificates: {}\n", .{err});
+        return err;
+    };
+    defer cert.freeCertPaths(allocator, &cert_paths);
+
+    // Install CA cert to system trust store
+    cert.installCaCert(allocator, cert_paths.ca_cert);
+
     // Print service URLs
     for (services, ports) |svc_name, svc_port| {
-        std.debug.print("  {s}.{s}.localhost:{d} -> :{d}\n", .{ svc_name, proj_name, proxy.PROXY_PORT, svc_port });
+        std.debug.print("  {s}.{s}.localhost:{d} -> :{d} (HTTP)\n", .{ svc_name, proj_name, proxy.PROXY_PORT, svc_port });
+        std.debug.print("  {s}.{s}.localhost:{d} -> :{d} (TLS)\n", .{ svc_name, proj_name, proxy.PROXY_TLS_PORT, svc_port });
     }
 
-    // 4. Start proxy server in background thread
+    // 4. Start proxy servers in background threads
     const proxy_thread = std.Thread.spawn(.{}, proxy.start, .{ allocator, mapping_dir_path }) catch |err| {
-        std.debug.print("Warning: failed to start proxy server: {}\n", .{err});
+        std.debug.print("Warning: failed to start HTTP proxy server: {}\n", .{err});
         return err;
     };
     proxy_thread.detach();
+
+    // Start TLS proxy
+    const tls_proxy_thread = std.Thread.spawn(.{}, tcp_proxy.start, .{ allocator, mapping_dir_path, cert_paths }) catch |err| {
+        std.debug.print("Warning: failed to start TLS proxy server: {}\n", .{err});
+        return err;
+    };
+    tls_proxy_thread.detach();
 
     // 5. Set environment variables and execute command
     const exec_services = try allocator.alloc(executor.ServicePort, services.len);
@@ -263,10 +283,29 @@ fn proxyCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void 
         else => return err,
     };
 
-    std.debug.print("Starting proxy server on :{d}\n", .{proxy.PROXY_PORT});
+    // Ensure TLS certificates
+    var cert_paths = cert.ensureCerts(allocator) catch |err| {
+        std.debug.print("Warning: failed to generate TLS certificates: {}\n", .{err});
+        return err;
+    };
+    defer cert.freeCertPaths(allocator, &cert_paths);
+
+    // Install CA cert to system trust store
+    cert.installCaCert(allocator, cert_paths.ca_cert);
+
+    std.debug.print("Starting proxy servers\n", .{});
+    std.debug.print("  HTTP: :{d}\n", .{proxy.PROXY_PORT});
+    std.debug.print("  TLS:  :{d}\n", .{proxy.PROXY_TLS_PORT});
     std.debug.print("Mapping directory: {s}\n", .{mapping_dir_path});
 
-    // Start proxy server (blocking)
+    // Start TLS proxy in background thread
+    const tls_proxy_thread = std.Thread.spawn(.{}, tcp_proxy.start, .{ allocator, mapping_dir_path, cert_paths }) catch |err| {
+        std.debug.print("Warning: failed to start TLS proxy server: {}\n", .{err});
+        return err;
+    };
+    tls_proxy_thread.detach();
+
+    // Start HTTP proxy server (blocking)
     try proxy.start(allocator, mapping_dir_path);
 }
 

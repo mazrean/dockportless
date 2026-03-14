@@ -561,4 +561,3 @@ test "extractHostHeader: no host header" {
     const headers = "GET / HTTP/1.1\r\nAccept: */*\r\n\r\n";
     try std.testing.expect(extractHostHeader(headers) == null);
 }
-

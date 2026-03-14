@@ -26,8 +26,13 @@ pub fn findComposeFile(dir: std.fs.Dir) ComposeError![]const u8 {
     return ComposeError.FileNotFound;
 }
 
-/// Parse a compose file and return a list of service names.
-pub fn parseServices(allocator: Allocator, dir: std.fs.Dir, file_path: []const u8) ![]const []const u8 {
+pub const ServiceInfo = struct {
+    name: []const u8,
+    port_count: usize,
+};
+
+/// Parse a compose file and return a list of services with port counts.
+pub fn parseServices(allocator: Allocator, dir: std.fs.Dir, file_path: []const u8) ![]const ServiceInfo {
     const source = dir.readFileAlloc(allocator, file_path, 1024 * 1024) catch {
         return ComposeError.FileNotFound;
     };
@@ -36,8 +41,8 @@ pub fn parseServices(allocator: Allocator, dir: std.fs.Dir, file_path: []const u
     return parseServicesFromSource(allocator, source);
 }
 
-/// Extract service names from YAML source.
-fn parseServicesFromSource(allocator: Allocator, source: []const u8) ![]const []const u8 {
+/// Extract service info (name + port count) from YAML source.
+fn parseServicesFromSource(allocator: Allocator, source: []const u8) ![]const ServiceInfo {
     var doc = yaml.Yaml{ .source = source };
     defer doc.deinit(allocator);
 
@@ -56,9 +61,23 @@ fn parseServicesFromSource(allocator: Allocator, source: []const u8) ![]const []
     const services_map = services_value.asMap() orelse return ComposeError.NoServicesFound;
 
     const keys = services_map.keys();
-    const result = try allocator.alloc([]const u8, keys.len);
-    for (keys, 0..) |key, i| {
-        result[i] = try allocator.dupe(u8, key);
+    const values = services_map.values();
+    const result = try allocator.alloc(ServiceInfo, keys.len);
+    for (keys, values, 0..) |key, value, i| {
+        var port_count: usize = 1; // default: 1 port per service
+        if (value.asMap()) |svc_map| {
+            if (svc_map.get("ports")) |ports_value| {
+                if (ports_value.asList()) |ports_list| {
+                    if (ports_list.len > 0) {
+                        port_count = ports_list.len;
+                    }
+                }
+            }
+        }
+        result[i] = .{
+            .name = try allocator.dupe(u8, key),
+            .port_count = port_count,
+        };
     }
 
     return result;
@@ -91,9 +110,9 @@ pub fn extractComposeFilesFromArgs(allocator: Allocator, cmd_args: []const []con
     return result;
 }
 
-pub fn freeServices(allocator: Allocator, services: []const []const u8) void {
+pub fn freeServices(allocator: Allocator, services: []const ServiceInfo) void {
     for (services) |service| {
-        allocator.free(service);
+        allocator.free(service.name);
     }
     allocator.free(services);
 }
@@ -114,8 +133,10 @@ test "parseServicesFromSource: basic compose file" {
     defer freeServices(allocator, services);
 
     try std.testing.expectEqual(@as(usize, 2), services.len);
-    try std.testing.expectEqualStrings("web", services[0]);
-    try std.testing.expectEqualStrings("api", services[1]);
+    try std.testing.expectEqualStrings("web", services[0].name);
+    try std.testing.expectEqual(@as(usize, 1), services[0].port_count);
+    try std.testing.expectEqualStrings("api", services[1].name);
+    try std.testing.expectEqual(@as(usize, 1), services[1].port_count);
 }
 
 test "parseServicesFromSource: no services key" {
@@ -163,7 +184,33 @@ test "parseServicesFromSource: single service" {
     defer freeServices(allocator, services);
 
     try std.testing.expectEqual(@as(usize, 1), services.len);
-    try std.testing.expectEqualStrings("db", services[0]);
+    try std.testing.expectEqualStrings("db", services[0].name);
+    try std.testing.expectEqual(@as(usize, 1), services[0].port_count);
+}
+
+test "parseServicesFromSource: service with multiple ports" {
+    const source =
+        \\services:
+        \\  web:
+        \\    image: nginx
+        \\    ports:
+        \\      - "8080:80"
+        \\      - "8443:443"
+        \\  api:
+        \\    image: node
+        \\    ports:
+        \\      - "3000:3000"
+    ;
+
+    const allocator = std.testing.allocator;
+    const services = try parseServicesFromSource(allocator, source);
+    defer freeServices(allocator, services);
+
+    try std.testing.expectEqual(@as(usize, 2), services.len);
+    try std.testing.expectEqualStrings("web", services[0].name);
+    try std.testing.expectEqual(@as(usize, 2), services[0].port_count);
+    try std.testing.expectEqualStrings("api", services[1].name);
+    try std.testing.expectEqual(@as(usize, 1), services[1].port_count);
 }
 
 // --- extractComposeFilesFromArgs tests ---

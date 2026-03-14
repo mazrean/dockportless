@@ -38,10 +38,13 @@ const MYSQL_CLIENT_PLUGIN_AUTH: u32 = 0x00080000;
 pub const HostInfo = struct {
     service: []const u8,
     project: []const u8,
+    port_index: usize,
 };
 
-/// Extract project_name and service_name from the Host header.
-/// Format: <service_name>.<project_name>.localhost[:port]
+/// Extract project_name, service_name and optional port index from the Host header.
+/// Formats:
+///   <service_name>.<project_name>.localhost[:port]           -> port_index = 0
+///   <index>.<service_name>.<project_name>.localhost[:port]   -> port_index = index
 pub fn parseHost(host: []const u8) ?HostInfo {
     // Strip port if present
     const host_without_port = if (std.mem.indexOfScalar(u8, host, ':')) |colon_idx|
@@ -56,22 +59,44 @@ pub fn parseHost(host: []const u8) ?HostInfo {
     const prefix = host_without_port[0 .. host_without_port.len - suffix.len];
     if (prefix.len == 0) return null;
 
-    // Find the first dot: <service>.<project>
-    const dot_idx = std.mem.indexOfScalar(u8, prefix, '.') orelse return null;
-    if (dot_idx == 0 or dot_idx == prefix.len - 1) return null;
+    // Find the first dot
+    const first_dot = std.mem.indexOfScalar(u8, prefix, '.') orelse return null;
+    if (first_dot == 0 or first_dot == prefix.len - 1) return null;
 
-    return HostInfo{
-        .service = prefix[0..dot_idx],
-        .project = prefix[dot_idx + 1 ..],
-    };
+    const first_part = prefix[0..first_dot];
+    const rest = prefix[first_dot + 1 ..];
+
+    // Try to parse first_part as a port index number
+    if (std.fmt.parseInt(usize, first_part, 10)) |port_index| {
+        // Format: <index>.<service>.<project>.localhost
+        // rest must contain at least <service>.<project>
+        const second_dot = std.mem.indexOfScalar(u8, rest, '.') orelse return null;
+        if (second_dot == 0 or second_dot == rest.len - 1) return null;
+
+        return HostInfo{
+            .service = rest[0..second_dot],
+            .project = rest[second_dot + 1 ..],
+            .port_index = port_index,
+        };
+    } else |_| {
+        // Format: <service>.<project>.localhost
+        return HostInfo{
+            .service = first_part,
+            .project = rest,
+            .port_index = 0,
+        };
+    }
 }
 
-/// Look up the backend port from mappings by project and service name.
-fn findBackendPort(mappings: []const mapping.ProjectMapping, project: []const u8, service: []const u8) ?u16 {
+/// Look up the backend port from mappings by project, service name, and port index.
+fn findBackendPort(mappings: []const mapping.ProjectMapping, project: []const u8, service: []const u8, port_index: usize) ?u16 {
     for (mappings) |m| {
         if (!std.mem.eql(u8, m.project_name, project)) continue;
         for (m.services) |svc| {
-            if (std.mem.eql(u8, svc.service_name, service)) return svc.port;
+            if (std.mem.eql(u8, svc.service_name, service)) {
+                if (port_index < svc.ports.len) return svc.ports[port_index];
+                return null;
+            }
         }
     }
     return null;
@@ -238,7 +263,7 @@ fn handleHttpClient(allocator: Allocator, client_fd: posix.socket_t, mapping_dir
     const mappings = try mapping.readAllMappings(allocator, mapping_dir_path);
     defer mapping.freeAllMappings(allocator, mappings);
 
-    const backend_port = findBackendPort(mappings, host_info.project, host_info.service) orelse {
+    const backend_port = findBackendPort(mappings, host_info.project, host_info.service, host_info.port_index) orelse {
         sendErrorResponse(client_fd, "404 Not Found", "Service not found");
         return;
     };
@@ -365,7 +390,7 @@ fn handleTlsClient(ctx: ClientContext) !void {
     const mappings = try mapping.readAllMappings(ctx.allocator, ctx.mapping_dir_path);
     defer mapping.freeAllMappings(ctx.allocator, mappings);
 
-    const backend_port = findBackendPort(mappings, host_info.project, host_info.service) orelse {
+    const backend_port = findBackendPort(mappings, host_info.project, host_info.service, host_info.port_index) orelse {
         return error.ServiceNotFound;
     };
 
@@ -918,7 +943,7 @@ fn handleMysqlClient(ctx: ClientContext) !void {
     // 5. Look up backend
     const mappings = try mapping.readAllMappings(ctx.allocator, ctx.mapping_dir_path);
     defer mapping.freeAllMappings(ctx.allocator, mappings);
-    const backend_port = findBackendPort(mappings, host_info.project, host_info.service) orelse return error.ServiceNotFound;
+    const backend_port = findBackendPort(mappings, host_info.project, host_info.service, host_info.port_index) orelse return error.ServiceNotFound;
 
     // 6. Read client's HandshakeResponse (over TLS, contains cleartext password)
     var hr_buf: [4096]u8 = undefined;
@@ -969,12 +994,35 @@ test "parseHost: valid host" {
     const result = parseHost("web.myapp.localhost:7355").?;
     try std.testing.expectEqualStrings("web", result.service);
     try std.testing.expectEqualStrings("myapp", result.project);
+    try std.testing.expectEqual(@as(usize, 0), result.port_index);
 }
 
 test "parseHost: without port" {
     const result = parseHost("api.backend.localhost").?;
     try std.testing.expectEqualStrings("api", result.service);
     try std.testing.expectEqualStrings("backend", result.project);
+    try std.testing.expectEqual(@as(usize, 0), result.port_index);
+}
+
+test "parseHost: with port index" {
+    const result = parseHost("0.web.myapp.localhost:7355").?;
+    try std.testing.expectEqualStrings("web", result.service);
+    try std.testing.expectEqualStrings("myapp", result.project);
+    try std.testing.expectEqual(@as(usize, 0), result.port_index);
+}
+
+test "parseHost: with port index 1" {
+    const result = parseHost("1.web.myapp.localhost:7355").?;
+    try std.testing.expectEqualStrings("web", result.service);
+    try std.testing.expectEqualStrings("myapp", result.project);
+    try std.testing.expectEqual(@as(usize, 1), result.port_index);
+}
+
+test "parseHost: with port index and multi-level project" {
+    const result = parseHost("2.api.my.app.localhost").?;
+    try std.testing.expectEqualStrings("api", result.service);
+    try std.testing.expectEqualStrings("my.app", result.project);
+    try std.testing.expectEqual(@as(usize, 2), result.port_index);
 }
 
 test "parseHost: just localhost" {
@@ -982,7 +1030,6 @@ test "parseHost: just localhost" {
 }
 
 test "parseHost: single component before localhost" {
-    // "web.localhost" has no project
     try std.testing.expect(parseHost("web.localhost") == null);
 }
 
@@ -998,37 +1045,57 @@ test "parseHost: multi-level project name" {
     const result = parseHost("web.my.app.localhost:7355").?;
     try std.testing.expectEqualStrings("web", result.service);
     try std.testing.expectEqualStrings("my.app", result.project);
+    try std.testing.expectEqual(@as(usize, 0), result.port_index);
 }
 
-test "findBackendPort: found" {
+test "findBackendPort: found index 0" {
+    const web_ports = &[_]u16{ 49152, 49154 };
+    const api_ports = &[_]u16{49153};
     const mappings = &[_]mapping.ProjectMapping{
         .{
             .project_name = "myapp",
             .pid = 123,
             .services = &[_]mapping.ServiceMapping{
-                .{ .service_name = "web", .port = 49152 },
-                .{ .service_name = "api", .port = 49153 },
+                .{ .service_name = "web", .ports = web_ports },
+                .{ .service_name = "api", .ports = api_ports },
             },
         },
     };
 
-    try std.testing.expectEqual(@as(?u16, 49152), findBackendPort(mappings, "myapp", "web"));
-    try std.testing.expectEqual(@as(?u16, 49153), findBackendPort(mappings, "myapp", "api"));
+    try std.testing.expectEqual(@as(?u16, 49152), findBackendPort(mappings, "myapp", "web", 0));
+    try std.testing.expectEqual(@as(?u16, 49154), findBackendPort(mappings, "myapp", "web", 1));
+    try std.testing.expectEqual(@as(?u16, 49153), findBackendPort(mappings, "myapp", "api", 0));
+}
+
+test "findBackendPort: index out of range" {
+    const web_ports = &[_]u16{49152};
+    const mappings = &[_]mapping.ProjectMapping{
+        .{
+            .project_name = "myapp",
+            .pid = 123,
+            .services = &[_]mapping.ServiceMapping{
+                .{ .service_name = "web", .ports = web_ports },
+            },
+        },
+    };
+
+    try std.testing.expectEqual(@as(?u16, null), findBackendPort(mappings, "myapp", "web", 1));
 }
 
 test "findBackendPort: not found" {
+    const web_ports = &[_]u16{49152};
     const mappings = &[_]mapping.ProjectMapping{
         .{
             .project_name = "myapp",
             .pid = 123,
             .services = &[_]mapping.ServiceMapping{
-                .{ .service_name = "web", .port = 49152 },
+                .{ .service_name = "web", .ports = web_ports },
             },
         },
     };
 
-    try std.testing.expectEqual(@as(?u16, null), findBackendPort(mappings, "myapp", "db"));
-    try std.testing.expectEqual(@as(?u16, null), findBackendPort(mappings, "other", "web"));
+    try std.testing.expectEqual(@as(?u16, null), findBackendPort(mappings, "myapp", "db", 0));
+    try std.testing.expectEqual(@as(?u16, null), findBackendPort(mappings, "other", "web", 0));
 }
 
 test "extractHostHeader: standard header" {

@@ -99,12 +99,12 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
     const extracted_files = try compose.extractComposeFilesFromArgs(allocator, cmd_args.items);
     defer if (extracted_files) |files| allocator.free(files);
 
-    var services: []const []const u8 = &.{};
+    var services: []const compose.ServiceInfo = &.{};
     if (extracted_files) |files| {
         // Parse services from all specified compose files
-        var all_services: std.ArrayListUnmanaged([]const u8) = .{};
+        var all_services: std.ArrayListUnmanaged(compose.ServiceInfo) = .{};
         errdefer {
-            for (all_services.items) |s| allocator.free(s);
+            for (all_services.items) |s| allocator.free(s.name);
             all_services.deinit(allocator);
         }
         for (files) |file| {
@@ -154,22 +154,43 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
     defer reserved_ports.deinit(allocator);
     for (existing_mappings) |m| {
         for (m.services) |svc| {
-            try reserved_ports.append(allocator, svc.port);
+            for (svc.ports) |p| {
+                try reserved_ports.append(allocator, p);
+            }
         }
     }
 
-    // 3. Allocate ports (avoiding reserved)
-    const ports = try port.allocatePorts(allocator, services.len, reserved_ports.items);
-    defer allocator.free(ports);
+    // 3. Allocate ports (avoiding reserved) - total count is sum of port_counts
+    var total_port_count: usize = 0;
+    for (services) |svc| {
+        total_port_count += svc.port_count;
+    }
 
+    const all_ports = try port.allocatePorts(allocator, total_port_count, reserved_ports.items);
+    defer allocator.free(all_ports);
+
+    // Build service mappings with multi-port slices
     const service_mappings = try allocator.alloc(mapping.ServiceMapping, services.len);
     defer allocator.free(service_mappings);
 
-    for (services, ports, 0..) |svc_name, svc_port, i| {
+    // Allocate port slices for each service (owned, freed at cleanup)
+    var port_slices: std.ArrayListUnmanaged([]u16) = .{};
+    defer {
+        for (port_slices.items) |s| allocator.free(s);
+        port_slices.deinit(allocator);
+    }
+
+    var port_offset: usize = 0;
+    for (services, 0..) |svc, i| {
+        const svc_ports = try allocator.alloc(u16, svc.port_count);
+        @memcpy(svc_ports, all_ports[port_offset .. port_offset + svc.port_count]);
+        try port_slices.append(allocator, svc_ports);
+
         service_mappings[i] = .{
-            .service_name = svc_name,
-            .port = svc_port,
+            .service_name = svc.name,
+            .ports = svc_ports,
         };
+        port_offset += svc.port_count;
     }
 
     const project_mapping = mapping.ProjectMapping{
@@ -199,8 +220,10 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
     cert.installCaCert(cert_paths.ca_cert);
 
     // Print service URLs
-    for (services, ports) |svc_name, svc_port| {
-        std.debug.print("  {s}.{s}.localhost:{d} -> :{d} (HTTP/TLS)\n", .{ svc_name, proj_name, proxy.PROXY_PORT, svc_port });
+    for (services, service_mappings) |svc, sm| {
+        for (sm.ports, 0..) |p, idx| {
+            std.debug.print("  {d}.{s}.{s}.localhost:{d} -> :{d} (HTTP/TLS)\n", .{ idx, svc.name, proj_name, proxy.PROXY_PORT, p });
+        }
     }
 
     // 4. Start proxy server in background thread (handles both HTTP and TLS)
@@ -211,13 +234,14 @@ fn runCmd(allocator: std.mem.Allocator, args: *std.process.ArgIterator) !void {
     proxy_thread.detach();
 
     // 5. Set environment variables and execute command
-    const exec_services = try allocator.alloc(executor.ServicePort, services.len);
+    const exec_services = try allocator.alloc(executor.ServicePorts, services.len);
     defer allocator.free(exec_services);
 
-    for (services, ports, 0..) |svc_name, svc_port, i| {
+    for (services, service_mappings, 0..) |svc, sm, i| {
+        _ = svc;
         exec_services[i] = .{
-            .service_name = svc_name,
-            .port = svc_port,
+            .service_name = sm.service_name,
+            .ports = sm.ports,
         };
     }
 

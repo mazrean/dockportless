@@ -1,0 +1,9 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_USER: postgres
+      POSTGRES_DB: app
+    ports:
+      - "${DB_PORT:-5432}:5432"

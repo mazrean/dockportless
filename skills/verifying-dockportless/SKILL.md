@@ -64,60 +64,11 @@ Each gets its own allocated ports and its own proxy routes.
 
 ## Compose File Setup
 
-Services must use environment variable substitution for ports so dockportless can inject allocated ports.
-
-### Single-port services
-
-```yaml
-services:
-  web:
-    image: nginx
-    ports:
-      - "${WEB_PORT:-8080}:80"
-  api:
-    build: .
-    ports:
-      - "${API_PORT:-3000}:3000"
-```
-
-dockportless sets `WEB_PORT` and `API_PORT` automatically. Without dockportless, the defaults (8080, 3000) are used.
-
-### Multi-port services
-
-When a service exposes multiple ports, use indexed environment variables:
-
-```yaml
-services:
-  web:
-    image: myapp
-    ports:
-      - "${WEB_PORT_0:-8080}:8080"   # HTTP
-      - "${WEB_PORT_1:-8443}:8443"   # HTTPS backend
-```
-
-- `WEB_PORT` is an alias for `WEB_PORT_0` (backward-compatible)
-- URL for index 0: `web.myapp.localhost:7355` (no prefix)
-- URL for index 1+: `1.web.myapp.localhost:7355`
+Services must use `${SERVICE_PORT:-default}` pattern in ports. See [COMPOSE-SETUP.md](references/COMPOSE-SETUP.md) for single-port, multi-port examples, and env var naming rules.
 
 ## TLS SNI Routing (requires `dockportless trust`)
 
-dockportless auto-detects the protocol of incoming connections:
-
-- **HTTP** — Routed by `Host` header. **No TLS setup needed.**
-- **TLS (HTTPS, Redis, MongoDB, etc.)** — Routed by SNI hostname with TLS termination
-- **PostgreSQL SSL** — Detects `SSLRequest`, upgrades to TLS, then routes by SNI
-
-TLS is required for non-HTTP TCP protocols because dockportless needs a hostname to route to the correct backend. These protocols don't send a hostname in plaintext like HTTP's `Host` header, so TLS SNI is the only way to identify the target service.
-
-**When you need TLS:**
-
-| Use case | Example | `trust` needed? |
-|----------|---------|-----------------|
-| Web app via HTTP | `curl http://web.myapp.localhost:7355/` | No |
-| Web app via HTTPS | `curl https://web.myapp.localhost:7355/` | **Yes** |
-| PostgreSQL | `psql "host=db.myapp.localhost port=7355 sslmode=require"` | **Yes** |
-| Redis | `redli --tls -h cache.myapp.localhost -p 7355` | **Yes** |
-| MongoDB | `mongosh "mongodb://db.myapp.localhost:7355/?tls=true"` | **Yes** |
+**Not needed for HTTP-only services.** Required only for HTTPS, PostgreSQL, Redis, or MongoDB direct access. See [TLS-ROUTING.md](references/TLS-ROUTING.md) for protocol details, decision table, and client examples.
 
 ## Workflow
 
@@ -130,5 +81,7 @@ TLS is required for non-HTTP TCP protocols because dockportless needs a hostname
 
 ## Reference
 
+- [COMPOSE-SETUP.md](references/COMPOSE-SETUP.md) - Compose file examples (single-port, multi-port, env var naming)
+- [TLS-ROUTING.md](references/TLS-ROUTING.md) - TLS SNI protocol details, decision table, client examples
 - [VERIFICATION-GUIDE.md](references/VERIFICATION-GUIDE.md) - Detailed verification steps, multi-worktree scenarios, and troubleshooting
 - [AFTER-RESTART.md](references/AFTER-RESTART.md) - Recovering proxy routing after a machine restart

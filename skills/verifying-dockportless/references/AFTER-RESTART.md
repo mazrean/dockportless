@@ -29,4 +29,4 @@ After a restart, the mappings already exist. You only need:
 
 ## TLS After Restart
 
-The CA certificate installed by `sudo dockportless trust` persists across restarts — no need to re-run. TLS routing resumes automatically when the proxy starts, as long as the generated certificates exist in `$XDG_DATA_HOME/dockportless/certs/`.
+The CA certificate persists across restarts — no need to re-run `sudo dockportless trust`. See [TLS-ROUTING.md](TLS-ROUTING.md) for details.

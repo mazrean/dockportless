@@ -34,6 +34,47 @@ pub fn getCertDir(allocator: Allocator) ![]const u8 {
     }
 }
 
+/// Check if certificates already exist. Returns null if not present.
+pub fn checkCerts(allocator: Allocator) !?CertPaths {
+    const cert_dir = try getCertDir(allocator);
+    errdefer allocator.free(cert_dir);
+
+    const ca_cert = try std.fmt.allocPrint(allocator, "{s}/ca.crt", .{cert_dir});
+    errdefer allocator.free(ca_cert);
+    const ca_key = try std.fmt.allocPrint(allocator, "{s}/ca.key", .{cert_dir});
+    errdefer allocator.free(ca_key);
+    const server_cert = try std.fmt.allocPrint(allocator, "{s}/server.crt", .{cert_dir});
+    errdefer allocator.free(server_cert);
+    const server_key = try std.fmt.allocPrint(allocator, "{s}/server.key", .{cert_dir});
+    errdefer allocator.free(server_key);
+
+    const exists = blk: {
+        var dir = std.fs.openDirAbsolute(cert_dir, .{}) catch break :blk false;
+        defer dir.close();
+        _ = dir.statFile("ca.crt") catch break :blk false;
+        _ = dir.statFile("server.crt") catch break :blk false;
+        _ = dir.statFile("server.key") catch break :blk false;
+        break :blk true;
+    };
+
+    if (!exists) {
+        allocator.free(cert_dir);
+        allocator.free(ca_cert);
+        allocator.free(ca_key);
+        allocator.free(server_cert);
+        allocator.free(server_key);
+        return null;
+    }
+
+    return CertPaths{
+        .dir = cert_dir,
+        .ca_cert = ca_cert,
+        .ca_key = ca_key,
+        .server_cert = server_cert,
+        .server_key = server_key,
+    };
+}
+
 /// Ensure certificates exist. Generate if not present.
 pub fn ensureCerts(allocator: Allocator) !CertPaths {
     const cert_dir = try getCertDir(allocator);

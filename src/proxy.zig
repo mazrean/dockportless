@@ -163,7 +163,7 @@ fn detectProtocol(fd: posix.socket_t) !Protocol {
 const ClientContext = struct {
     client_fd: posix.socket_t,
     allocator: Allocator,
-    ssl_ctx: *c.SSL_CTX,
+    ssl_ctx: ?*c.SSL_CTX,
     mapping_dir_path: []const u8,
 };
 
@@ -174,11 +174,23 @@ fn clientThread(ctx: ClientContext) void {
     setRecvTimeout(ctx.client_fd, 10);
 
     switch (protocol) {
-        .tls => handleTlsClient(ctx) catch |err| {
-            std.debug.print("TLS client error: {}\n", .{err});
+        .tls => {
+            if (ctx.ssl_ctx == null) {
+                std.debug.print("TLS connection rejected: no certificates available. Run 'sudo dockportless trust' to enable TLS.\n", .{});
+                return;
+            }
+            handleTlsClient(ctx) catch |err| {
+                std.debug.print("TLS client error: {}\n", .{err});
+            };
         },
-        .postgres_ssl => handlePostgresClient(ctx) catch |err| {
-            std.debug.print("PostgreSQL client error: {}\n", .{err});
+        .postgres_ssl => {
+            if (ctx.ssl_ctx == null) {
+                std.debug.print("PostgreSQL SSL connection rejected: no certificates available. Run 'sudo dockportless trust' to enable TLS.\n", .{});
+                return;
+            }
+            handlePostgresClient(ctx) catch |err| {
+                std.debug.print("PostgreSQL client error: {}\n", .{err});
+            };
         },
         .http => handleHttpClient(ctx.allocator, ctx.client_fd, ctx.mapping_dir_path) catch |err| {
             std.debug.print("HTTP client error: {}\n", .{err});
@@ -187,29 +199,37 @@ fn clientThread(ctx: ClientContext) void {
 }
 
 /// Start the unified proxy server (blocking).
-pub fn start(allocator: Allocator, mapping_dir_path: []const u8, cert_paths: cert.CertPaths) !void {
-    // Initialize OpenSSL TLS context
-    const method = c.TLS_server_method() orelse return error.SslInitFailed;
-    const ssl_ctx = c.SSL_CTX_new(method) orelse return error.SslCtxFailed;
-    defer c.SSL_CTX_free(ssl_ctx);
+/// If cert_paths is null, the server runs in HTTP-only mode.
+pub fn start(allocator: Allocator, mapping_dir_path: []const u8, cert_paths: ?cert.CertPaths) !void {
+    // Initialize OpenSSL TLS context only if certificates are available
+    var ssl_ctx: ?*c.SSL_CTX = null;
+    defer if (ssl_ctx) |ctx| c.SSL_CTX_free(ctx);
 
-    // Load certificate and private key
-    const cert_path_z = try allocator.dupeZ(u8, cert_paths.server_cert);
-    defer allocator.free(cert_path_z);
-    const key_path_z = try allocator.dupeZ(u8, cert_paths.server_key);
-    defer allocator.free(key_path_z);
+    if (cert_paths) |paths| {
+        const method = c.TLS_server_method() orelse return error.SslInitFailed;
+        const ctx = c.SSL_CTX_new(method) orelse return error.SslCtxFailed;
 
-    if (c.SSL_CTX_use_certificate_chain_file(ssl_ctx, cert_path_z.ptr) != 1) {
-        return error.SslCertLoadFailed;
-    }
-    if (c.SSL_CTX_use_PrivateKey_file(ssl_ctx, key_path_z.ptr, c.SSL_FILETYPE_PEM) != 1) {
-        return error.SslKeyLoadFailed;
+        const cert_path_z = try allocator.dupeZ(u8, paths.server_cert);
+        defer allocator.free(cert_path_z);
+        const key_path_z = try allocator.dupeZ(u8, paths.server_key);
+        defer allocator.free(key_path_z);
+
+        if (c.SSL_CTX_use_certificate_chain_file(ctx, cert_path_z.ptr) != 1) {
+            return error.SslCertLoadFailed;
+        }
+        if (c.SSL_CTX_use_PrivateKey_file(ctx, key_path_z.ptr, c.SSL_FILETYPE_PEM) != 1) {
+            return error.SslKeyLoadFailed;
+        }
+
+        ssl_ctx = ctx;
+        std.debug.print("Proxy server listening on :{d} (HTTP + TLS)\n", .{PROXY_PORT});
+    } else {
+        std.debug.print("Proxy server listening on :{d} (HTTP only)\n", .{PROXY_PORT});
+        std.debug.print("info: To use TLS proxy for PostgreSQL, Redis, etc., run: sudo dockportless trust\n", .{});
     }
 
     const listen_fd = try createListenSocket();
     defer posix.close(listen_fd);
-
-    std.debug.print("Proxy server listening on :{d} (HTTP + TLS)\n", .{PROXY_PORT});
 
     while (true) {
         var client_addr: posix.sockaddr = undefined;
@@ -352,7 +372,7 @@ fn handlePostgresClient(ctx: ClientContext) !void {
 // ---- TLS handling ----
 
 fn handleTlsClient(ctx: ClientContext) !void {
-    const ssl_obj = c.SSL_new(ctx.ssl_ctx) orelse return error.SslNewFailed;
+    const ssl_obj = c.SSL_new(ctx.ssl_ctx orelse return error.NoTlsContext) orelse return error.SslNewFailed;
     defer c.SSL_free(ssl_obj);
 
     _ = c.SSL_set_fd(ssl_obj, @intCast(ctx.client_fd));

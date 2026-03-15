@@ -8,33 +8,64 @@ const c = @cImport({
     @cInclude("openssl/x509v3.h");
     @cInclude("openssl/pem.h");
     @cInclude("openssl/bio.h");
+    @cInclude("openssl/ec.h");
 });
 
 pub const CertPaths = struct {
     dir: []const u8,
     ca_cert: []const u8,
     ca_key: []const u8,
-    server_cert: []const u8,
-    server_key: []const u8,
+};
+
+/// CA credentials loaded into memory for signing dynamic server certs.
+pub const CaCredentials = struct {
+    ca_cert: *anyopaque,
+    ca_key: *anyopaque,
+};
+
+/// Dynamically generated server certificate for a specific domain.
+pub const DomainCert = struct {
+    cert: *anyopaque,
+    key: *anyopaque,
 };
 
 /// Get the certificate directory path.
 /// Uses $XDG_DATA_HOME/dockportless/certs/ (fallback: ~/.local/share/dockportless/certs/).
+/// Under sudo, resolves to the original user's home via SUDO_USER.
 pub fn getCertDir(allocator: Allocator) ![]const u8 {
     if (std.process.getEnvVarOwned(allocator, "XDG_DATA_HOME")) |data_home| {
         defer allocator.free(data_home);
         return std.fmt.allocPrint(allocator, "{s}/dockportless/certs", .{data_home});
     } else |_| {
-        if (std.process.getEnvVarOwned(allocator, "HOME")) |home| {
-            defer allocator.free(home);
-            return std.fmt.allocPrint(allocator, "{s}/.local/share/dockportless/certs", .{home});
-        } else |_| {
-            return allocator.dupe(u8, "/tmp/dockportless/certs");
+        const home = getEffectiveHome(allocator);
+        if (home) |h| {
+            defer allocator.free(h);
+            return std.fmt.allocPrint(allocator, "{s}/.local/share/dockportless/certs", .{h});
         }
+        return allocator.dupe(u8, "/tmp/dockportless/certs");
     }
 }
 
-/// Check if certificates already exist. Returns null if not present.
+/// Get the effective user's home directory.
+/// When running under sudo, use SUDO_USER to resolve the original user's home.
+fn getEffectiveHome(allocator: Allocator) ?[]const u8 {
+    // Under sudo, HOME points to root's home. Use SUDO_USER to find the original user.
+    if (std.process.getEnvVarOwned(allocator, "SUDO_USER")) |sudo_user| {
+        defer allocator.free(sudo_user);
+        // Try /home/<user> as a common default
+        const home = std.fmt.allocPrint(allocator, "/home/{s}", .{sudo_user}) catch return null;
+        // Verify the directory exists
+        std.fs.accessAbsolute(home, .{}) catch {
+            allocator.free(home);
+            // Fall through to regular HOME
+            return std.process.getEnvVarOwned(allocator, "HOME") catch return null;
+        };
+        return home;
+    } else |_| {}
+    return std.process.getEnvVarOwned(allocator, "HOME") catch return null;
+}
+
+/// Check if CA certificates already exist. Returns null if not present.
 pub fn checkCerts(allocator: Allocator) !?CertPaths {
     const cert_dir = try getCertDir(allocator);
     errdefer allocator.free(cert_dir);
@@ -43,17 +74,12 @@ pub fn checkCerts(allocator: Allocator) !?CertPaths {
     errdefer allocator.free(ca_cert);
     const ca_key = try std.fmt.allocPrint(allocator, "{s}/ca.key", .{cert_dir});
     errdefer allocator.free(ca_key);
-    const server_cert = try std.fmt.allocPrint(allocator, "{s}/server.crt", .{cert_dir});
-    errdefer allocator.free(server_cert);
-    const server_key = try std.fmt.allocPrint(allocator, "{s}/server.key", .{cert_dir});
-    errdefer allocator.free(server_key);
 
     const exists = blk: {
         var dir = std.fs.openDirAbsolute(cert_dir, .{}) catch break :blk false;
         defer dir.close();
         _ = dir.statFile("ca.crt") catch break :blk false;
-        _ = dir.statFile("server.crt") catch break :blk false;
-        _ = dir.statFile("server.key") catch break :blk false;
+        _ = dir.statFile("ca.key") catch break :blk false;
         break :blk true;
     };
 
@@ -61,8 +87,6 @@ pub fn checkCerts(allocator: Allocator) !?CertPaths {
         allocator.free(cert_dir);
         allocator.free(ca_cert);
         allocator.free(ca_key);
-        allocator.free(server_cert);
-        allocator.free(server_key);
         return null;
     }
 
@@ -70,12 +94,10 @@ pub fn checkCerts(allocator: Allocator) !?CertPaths {
         .dir = cert_dir,
         .ca_cert = ca_cert,
         .ca_key = ca_key,
-        .server_cert = server_cert,
-        .server_key = server_key,
     };
 }
 
-/// Ensure certificates exist. Generate if not present.
+/// Ensure CA certificates exist. Generate if not present.
 pub fn ensureCerts(allocator: Allocator) !CertPaths {
     const cert_dir = try getCertDir(allocator);
     errdefer allocator.free(cert_dir);
@@ -87,31 +109,24 @@ pub fn ensureCerts(allocator: Allocator) !CertPaths {
     errdefer allocator.free(ca_cert);
     const ca_key = try std.fmt.allocPrint(allocator, "{s}/ca.key", .{cert_dir});
     errdefer allocator.free(ca_key);
-    const server_cert = try std.fmt.allocPrint(allocator, "{s}/server.crt", .{cert_dir});
-    errdefer allocator.free(server_cert);
-    const server_key = try std.fmt.allocPrint(allocator, "{s}/server.key", .{cert_dir});
-    errdefer allocator.free(server_key);
 
-    // Check if certs already exist
+    // Check if CA certs already exist
     const needs_generation = blk: {
         var dir = std.fs.openDirAbsolute(cert_dir, .{}) catch break :blk true;
         defer dir.close();
         _ = dir.statFile("ca.crt") catch break :blk true;
-        _ = dir.statFile("server.crt") catch break :blk true;
-        _ = dir.statFile("server.key") catch break :blk true;
+        _ = dir.statFile("ca.key") catch break :blk true;
         break :blk false;
     };
 
     if (needs_generation) {
-        try generateCerts(allocator, ca_cert, ca_key, server_cert, server_key);
+        try generateCaCerts(allocator, ca_cert, ca_key);
     }
 
     return CertPaths{
         .dir = cert_dir,
         .ca_cert = ca_cert,
         .ca_key = ca_key,
-        .server_cert = server_cert,
-        .server_key = server_key,
     };
 }
 
@@ -128,10 +143,10 @@ fn makeDirRecursive(path: []const u8) void {
     };
 }
 
-fn generateCerts(allocator: Allocator, ca_cert_path: []const u8, ca_key_path: []const u8, server_cert_path: []const u8, server_key_path: []const u8) !void {
-    std.debug.print("Generating TLS certificates...\n", .{});
+fn generateCaCerts(allocator: Allocator, ca_cert_path: []const u8, ca_key_path: []const u8) !void {
+    std.debug.print("Generating CA certificate...\n", .{});
 
-    // Generate CA key pair
+    // Generate CA key pair (RSA 2048)
     const ca_pkey = generateRsaKey() orelse return error.KeyGenerationFailed;
     defer c.EVP_PKEY_free(ca_pkey);
 
@@ -139,21 +154,11 @@ fn generateCerts(allocator: Allocator, ca_cert_path: []const u8, ca_key_path: []
     const ca_x509 = try createCaCert(ca_pkey);
     defer c.X509_free(ca_x509);
 
-    // Generate server key pair
-    const server_pkey = generateRsaKey() orelse return error.KeyGenerationFailed;
-    defer c.EVP_PKEY_free(server_pkey);
-
-    // Create server certificate signed by CA
-    const server_x509 = try createServerCert(server_pkey, ca_x509, ca_pkey);
-    defer c.X509_free(server_x509);
-
     // Write PEM files
     try writePemKey(allocator, ca_key_path, ca_pkey);
     try writePemCert(allocator, ca_cert_path, ca_x509);
-    try writePemKey(allocator, server_key_path, server_pkey);
-    try writePemCert(allocator, server_cert_path, server_x509);
 
-    std.debug.print("TLS certificates generated successfully\n", .{});
+    std.debug.print("CA certificate generated successfully\n", .{});
 }
 
 fn generateRsaKey() ?*c.EVP_PKEY {
@@ -199,30 +204,88 @@ fn createCaCert(ca_key: *c.EVP_PKEY) !*c.X509 {
     return x509;
 }
 
-fn createServerCert(server_key: *c.EVP_PKEY, ca_cert: *c.X509, ca_key: *c.EVP_PKEY) !*c.X509 {
+/// Load CA certificate and key from files for runtime cert generation.
+pub fn loadCaCredentials(allocator: Allocator, ca_cert_path: []const u8, ca_key_path: []const u8) !CaCredentials {
+    const cert_path_z = try allocator.dupeZ(u8, ca_cert_path);
+    defer allocator.free(cert_path_z);
+    const key_path_z = try allocator.dupeZ(u8, ca_key_path);
+    defer allocator.free(key_path_z);
+
+    const cert_bio = c.BIO_new_file(cert_path_z.ptr, "r") orelse return error.CaCertLoadFailed;
+    defer _ = c.BIO_free(cert_bio);
+    const ca_cert = c.PEM_read_bio_X509(cert_bio, null, null, null) orelse return error.CaCertParseFailed;
+    errdefer c.X509_free(ca_cert);
+
+    const key_bio = c.BIO_new_file(key_path_z.ptr, "r") orelse return error.CaKeyLoadFailed;
+    defer _ = c.BIO_free(key_bio);
+    const ca_key = c.PEM_read_bio_PrivateKey(key_bio, null, null, null) orelse return error.CaKeyParseFailed;
+
+    return CaCredentials{ .ca_cert = @ptrCast(ca_cert), .ca_key = @ptrCast(ca_key) };
+}
+
+pub fn freeCaCredentials(creds: *CaCredentials) void {
+    c.X509_free(@ptrCast(@alignCast(creds.ca_cert)));
+    c.EVP_PKEY_free(@ptrCast(@alignCast(creds.ca_key)));
+}
+
+/// Generate a server certificate for a specific hostname, signed by the CA.
+/// Uses EC P-256 for fast key generation.
+pub fn generateDomainCert(allocator: Allocator, hostname: []const u8, ca_creds: CaCredentials) !DomainCert {
+    const ca_cert: *c.X509 = @ptrCast(@alignCast(ca_creds.ca_cert));
+    const ca_key: *c.EVP_PKEY = @ptrCast(@alignCast(ca_creds.ca_key));
+
+    // Generate EC P-256 key
+    const ec_key = c.EC_KEY_new_by_curve_name(c.NID_X9_62_prime256v1) orelse return error.EcKeyCreationFailed;
+    if (c.EC_KEY_generate_key(ec_key) != 1) {
+        c.EC_KEY_free(ec_key);
+        return error.EcKeyGenFailed;
+    }
+
+    const pkey = c.EVP_PKEY_new() orelse {
+        c.EC_KEY_free(ec_key);
+        return error.PKeyCreationFailed;
+    };
+    errdefer c.EVP_PKEY_free(pkey);
+
+    // EVP_PKEY_assign takes ownership of ec_key
+    if (c.EVP_PKEY_assign(pkey, c.EVP_PKEY_EC, @ptrCast(ec_key)) != 1) {
+        c.EC_KEY_free(ec_key);
+        return error.PKeyAssignFailed;
+    }
+
+    // Create X509 cert
     const x509 = c.X509_new() orelse return error.CertCreationFailed;
     errdefer c.X509_free(x509);
 
     _ = c.X509_set_version(x509, 2);
-    _ = c.ASN1_INTEGER_set(c.X509_get_serialNumber(x509), 2);
+    _ = c.ASN1_INTEGER_set(c.X509_get_serialNumber(x509), @intCast(@as(i64, @truncate(std.time.nanoTimestamp()))));
     _ = c.X509_gmtime_adj(c.X509_getm_notBefore(x509), 0);
-    _ = c.X509_gmtime_adj(c.X509_getm_notAfter(x509), 3650 * 24 * 60 * 60);
-    _ = c.X509_set_pubkey(x509, server_key);
+    _ = c.X509_gmtime_adj(c.X509_getm_notAfter(x509), 365 * 24 * 60 * 60);
+    _ = c.X509_set_pubkey(x509, pkey);
 
     const subj_name = c.X509_get_subject_name(x509);
-    _ = c.X509_NAME_add_entry_by_txt(subj_name, "CN", c.MBSTRING_ASC, "localhost", -1, -1, 0);
+    const hostname_z = try allocator.dupeZ(u8, hostname);
+    defer allocator.free(hostname_z);
+    _ = c.X509_NAME_add_entry_by_txt(subj_name, "CN", c.MBSTRING_ASC, hostname_z.ptr, -1, -1, 0);
     _ = c.X509_set_issuer_name(x509, c.X509_get_subject_name(ca_cert));
 
-    // Add subjectAltName
+    // Add SAN with exact hostname
     var v3ctx: c.X509V3_CTX = undefined;
     c.X509V3_set_ctx(&v3ctx, ca_cert, x509, null, null, 0);
-    const san_ext = c.X509V3_EXT_nconf(null, &v3ctx, "subjectAltName", "DNS:*.localhost,DNS:localhost") orelse return error.ExtensionFailed;
+
+    const san_value = try std.fmt.allocPrint(allocator, "DNS:{s}", .{hostname});
+    defer allocator.free(san_value);
+    const san_value_z = try allocator.dupeZ(u8, san_value);
+    defer allocator.free(san_value_z);
+
+    const san_ext = c.X509V3_EXT_nconf(null, &v3ctx, "subjectAltName", san_value_z.ptr) orelse return error.ExtensionFailed;
     defer c.X509_EXTENSION_free(san_ext);
     _ = c.X509_add_ext(x509, san_ext, -1);
 
+    // Sign with CA key
     if (c.X509_sign(x509, ca_key, c.EVP_sha256()) == 0) return error.CertSignFailed;
 
-    return x509;
+    return DomainCert{ .cert = @ptrCast(x509), .key = @ptrCast(pkey) };
 }
 
 fn writePemKey(allocator: Allocator, path: []const u8, pkey: *c.EVP_PKEY) !void {
@@ -295,10 +358,8 @@ pub fn installCaCert(ca_cert_path: []const u8) void {
         return;
     }
 
-    const content = readFileContent(ca_cert_path) orelse return;
-
     for (linux_trust_stores) |store| {
-        if (tryCopyCert(content, store.cert_path)) {
+        if (tryCopyCert(ca_cert_path, store.cert_path)) {
             std.debug.print("CA certificate installed to system trust store\n", .{});
             return;
         }
@@ -343,10 +404,8 @@ fn installCaCertMacos(allocator: Allocator, ca_cert_path: []const u8) !void {
 }
 
 fn installCaCertLinux(allocator: Allocator, ca_cert_path: []const u8) !void {
-    const content = readFileContent(ca_cert_path) orelse return error.CaCertReadFailed;
-
     for (linux_trust_stores) |store| {
-        if (tryCopyCert(content, store.cert_path)) {
+        if (tryCopyCert(ca_cert_path, store.cert_path)) {
             if (runUpdateCmd(allocator, store.update_cmd)) {
                 std.debug.print("CA certificate installed and trusted ({s})\n", .{store.label});
                 return;
@@ -367,25 +426,15 @@ fn runUpdateCmd(allocator: Allocator, argv: []const []const u8) bool {
     return term == .Exited and term.Exited == 0;
 }
 
-fn readFileContent(path: []const u8) ?[]const u8 {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
-    defer file.close();
-
-    var buf: [8192]u8 = undefined;
-    const n = file.readAll(&buf) catch return null;
-    return buf[0..n];
-}
-
-fn tryCopyCert(content: []const u8, dest_path: []const u8) bool {
+fn tryCopyCert(src_path: []const u8, dest_path: []const u8) bool {
     // Check if already installed
     std.fs.accessAbsolute(dest_path, .{}) catch {
-        // Not present, try to write
-        const dest = std.fs.createFileAbsolute(dest_path, .{}) catch return false;
-        defer dest.close();
-        dest.writeAll(content) catch return false;
+        // Not present, try to copy
+        std.fs.copyFileAbsolute(src_path, dest_path, .{}) catch return false;
         return true;
     };
-    // Already exists
+    // Already exists, overwrite to ensure up-to-date
+    std.fs.copyFileAbsolute(src_path, dest_path, .{}) catch return false;
     return true;
 }
 
@@ -393,6 +442,4 @@ pub fn freeCertPaths(allocator: Allocator, paths: *CertPaths) void {
     allocator.free(paths.dir);
     allocator.free(paths.ca_cert);
     allocator.free(paths.ca_key);
-    allocator.free(paths.server_cert);
-    allocator.free(paths.server_key);
 }

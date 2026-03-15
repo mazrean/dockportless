@@ -19,7 +19,7 @@ Inspired by [vercel/portless](https://github.com/vercel-labs/portless) — the s
 
 - **Zero-config port management** — Automatically assigns available ports, no collisions
 - **Pretty local URLs** — Access services at `web.myapp.localhost:7355` instead of `localhost:49152`
-- **TLS SNI routing** — Automatic protocol detection for HTTP, HTTPS, and PostgreSQL SSL with TLS termination
+- **TLS SNI routing** — Automatic protocol detection with TLS termination; routes any TCP protocol (HTTPS, PostgreSQL, Redis, Memcached, etc.)
 - **Multi-port support** — Services exposing multiple ports get indexed URLs (`0.web.myapp.localhost`, `1.web.myapp.localhost`)
 - **Parallel worktree support** — Develop multiple features simultaneously across git worktrees without port conflicts
 - **Agent-friendly** — Includes an [Agent Skill](#agent-skill) for AI coding agents to automate dev environment setup
@@ -159,7 +159,7 @@ Supported trust stores:
 dockportless automatically detects the protocol of incoming connections and routes them accordingly:
 
 - **HTTP** — Routed by `Host` header
-- **TLS (HTTPS)** — Routed by SNI hostname with TLS termination
+- **TLS (HTTPS, Redis, Memcached, etc.)** — Routed by SNI hostname with TLS termination, then forwarded as plain TCP to the backend. Any TCP-based protocol works over TLS.
 - **PostgreSQL SSL** — Detects `SSLRequest`, upgrades to TLS, then routes by SNI
 
 To use TLS routing, first install the CA certificate:
@@ -178,6 +178,12 @@ For PostgreSQL SSL connections:
 
 ```bash
 psql "host=db.myapp.localhost port=7355 sslmode=require"
+```
+
+For Redis over TLS (using `redli` or any TLS-capable client):
+
+```bash
+redli --tls -h cache.myapp.localhost -p 7355
 ```
 
 ## Multi-Port Services
@@ -231,7 +237,7 @@ flowchart TD
     A["Client request<br/>web.myapp.localhost:7355"] --> B["dockportless proxy<br/>on :7355"]
     B -- "detect protocol" --> D{Protocol?}
     D -- "HTTP<br/>(Host header)" --> C["localhost:54321<br/>(auto-assigned port)"]
-    D -- "TLS<br/>(SNI hostname)" --> E["TLS termination"] --> C
+    D -- "TLS<br/>(SNI hostname)" --> E["TLS termination<br/>(any TCP protocol)"] --> C
     D -- "PostgreSQL<br/>(SSLRequest)" --> F["SSL upgrade + SNI"] --> C
 ```
 

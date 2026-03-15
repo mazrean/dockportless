@@ -26,3 +26,7 @@ After a restart, the mappings already exist. You only need:
 
 1. **`dockportless proxy`** — to restart the proxy that routes requests based on existing mappings
 2. **`docker compose up -d`** — to bring containers back up (they retain their port configuration)
+
+## TLS After Restart
+
+The CA certificate installed by `sudo dockportless trust` persists across restarts — no need to re-run. TLS routing resumes automatically when the proxy starts, as long as the generated certificates exist in `$XDG_DATA_HOME/dockportless/certs/`.

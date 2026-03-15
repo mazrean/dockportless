@@ -6,9 +6,12 @@ pub fn build(b: *std.Build) void {
 
     const clap = b.dependency("clap", .{});
     const zig_yaml = b.dependency("zig_yaml", .{});
+    // OpenSSL uses function pointer casts (e.g. OPENSSL_sk_pop_free) that are
+    // technically undefined behavior in C. ReleaseSafe enables UBSan which
+    // traps on these, so always build OpenSSL with ReleaseFast.
     const openssl = b.dependency("openssl", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = .ReleaseFast,
     });
 
     const root_module = b.createModule(.{

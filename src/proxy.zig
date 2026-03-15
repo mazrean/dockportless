@@ -8,6 +8,8 @@ const Allocator = std.mem.Allocator;
 const c = @cImport({
     @cInclude("openssl/ssl.h");
     @cInclude("openssl/err.h");
+    @cInclude("openssl/x509.h");
+    @cInclude("openssl/evp.h");
     @cInclude("sys/socket.h");
 });
 
@@ -160,6 +162,59 @@ fn detectProtocol(fd: posix.socket_t) !Protocol {
     return .http;
 }
 
+/// SNI callback context: holds CA credentials and a cert cache for dynamic generation.
+const SniContext = struct {
+    allocator: Allocator,
+    ca_creds: cert.CaCredentials,
+    cache_mutex: std.Thread.Mutex = .{},
+    cert_cache: std.StringHashMap(cert.DomainCert),
+
+    fn init(allocator: Allocator, ca_creds: cert.CaCredentials) SniContext {
+        return .{
+            .allocator = allocator,
+            .ca_creds = ca_creds,
+            .cert_cache = std.StringHashMap(cert.DomainCert).init(allocator),
+        };
+    }
+
+    fn getCertForHostname(self: *SniContext, hostname: []const u8) ?cert.DomainCert {
+        self.cache_mutex.lock();
+        defer self.cache_mutex.unlock();
+
+        if (self.cert_cache.get(hostname)) |dc| {
+            return dc;
+        }
+
+        // Generate new cert for this hostname
+        const dc = cert.generateDomainCert(self.allocator, hostname, self.ca_creds) catch return null;
+
+        // Cache it with owned key
+        const key = self.allocator.dupe(u8, hostname) catch return dc;
+        self.cert_cache.put(key, dc) catch {};
+
+        return dc;
+    }
+};
+
+/// SNI callback: called during TLS handshake to set the appropriate certificate.
+fn sniCallback(ssl: ?*c.SSL, _: [*c]c_int, arg: ?*anyopaque) callconv(.c) c_int {
+    const ssl_obj = ssl orelse return c.SSL_TLSEXT_ERR_NOACK;
+    const sni_ctx: *SniContext = @ptrCast(@alignCast(arg orelse return c.SSL_TLSEXT_ERR_NOACK));
+
+    const servername_ptr = c.SSL_get_servername(ssl_obj, c.TLSEXT_NAMETYPE_host_name) orelse {
+        return c.SSL_TLSEXT_ERR_NOACK;
+    };
+    const hostname = std.mem.span(servername_ptr);
+
+    const dc = sni_ctx.getCertForHostname(hostname) orelse return c.SSL_TLSEXT_ERR_NOACK;
+
+    // Set the dynamic cert and key on this SSL connection
+    _ = c.SSL_use_certificate(ssl_obj, @ptrCast(dc.cert));
+    _ = c.SSL_use_PrivateKey(ssl_obj, @ptrCast(dc.key));
+
+    return c.SSL_TLSEXT_ERR_OK;
+}
+
 const ClientContext = struct {
     client_fd: posix.socket_t,
     allocator: Allocator,
@@ -201,25 +256,35 @@ fn clientThread(ctx: ClientContext) void {
 /// Start the unified proxy server (blocking).
 /// If cert_paths is null, the server runs in HTTP-only mode.
 pub fn start(allocator: Allocator, mapping_dir_path: []const u8, cert_paths: ?cert.CertPaths) !void {
-    // Initialize OpenSSL TLS context only if certificates are available
+    // Initialize OpenSSL TLS context only if CA certificates are available
     var ssl_ctx: ?*c.SSL_CTX = null;
     defer if (ssl_ctx) |ctx| c.SSL_CTX_free(ctx);
 
+    var sni_ctx: SniContext = undefined;
+
     if (cert_paths) |paths| {
+        const ca_creds = cert.loadCaCredentials(allocator, paths.ca_cert, paths.ca_key) catch |err| {
+            std.debug.print("Warning: failed to load CA credentials: {}, TLS disabled\n", .{err});
+            std.debug.print("Proxy server listening on :{d} (HTTP only)\n", .{PROXY_PORT});
+
+            const listen_fd = try createListenSocket();
+            defer posix.close(listen_fd);
+            return acceptLoop(allocator, listen_fd, null, mapping_dir_path);
+        };
+
         const method = c.TLS_server_method() orelse return error.SslInitFailed;
         const ctx = c.SSL_CTX_new(method) orelse return error.SslCtxFailed;
 
-        const cert_path_z = try allocator.dupeZ(u8, paths.server_cert);
-        defer allocator.free(cert_path_z);
-        const key_path_z = try allocator.dupeZ(u8, paths.server_key);
-        defer allocator.free(key_path_z);
+        sni_ctx = SniContext.init(allocator, ca_creds);
 
-        if (c.SSL_CTX_use_certificate_chain_file(ctx, cert_path_z.ptr) != 1) {
-            return error.SslCertLoadFailed;
-        }
-        if (c.SSL_CTX_use_PrivateKey_file(ctx, key_path_z.ptr, c.SSL_FILETYPE_PEM) != 1) {
-            return error.SslKeyLoadFailed;
-        }
+        // Register SNI callback for dynamic cert generation
+        _ = c.SSL_CTX_callback_ctrl(
+            ctx,
+            c.SSL_CTRL_SET_TLSEXT_SERVERNAME_CB,
+            @ptrCast(&sniCallback),
+        );
+        // Set callback argument
+        _ = c.SSL_CTX_ctrl(ctx, 54, 0, @ptrCast(&sni_ctx));
 
         ssl_ctx = ctx;
         std.debug.print("Proxy server listening on :{d} (HTTP + TLS)\n", .{PROXY_PORT});
@@ -231,6 +296,10 @@ pub fn start(allocator: Allocator, mapping_dir_path: []const u8, cert_paths: ?ce
     const listen_fd = try createListenSocket();
     defer posix.close(listen_fd);
 
+    acceptLoop(allocator, listen_fd, ssl_ctx, mapping_dir_path);
+}
+
+fn acceptLoop(allocator: Allocator, listen_fd: posix.socket_t, ssl_ctx: ?*c.SSL_CTX, mapping_dir_path: []const u8) void {
     while (true) {
         var client_addr: posix.sockaddr = undefined;
         var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr);
@@ -377,12 +446,12 @@ fn handleTlsClient(ctx: ClientContext) !void {
 
     _ = c.SSL_set_fd(ssl_obj, @intCast(ctx.client_fd));
 
-    // TLS handshake
+    // TLS handshake (SNI callback fires here to set the right cert)
     if (c.SSL_accept(ssl_obj) != 1) {
         return error.SslAcceptFailed;
     }
 
-    // Get SNI hostname
+    // Get SNI hostname (already used in SNI callback, available after handshake)
     const servername = c.SSL_get_servername(ssl_obj, c.TLSEXT_NAMETYPE_host_name) orelse {
         return error.NoSni;
     };

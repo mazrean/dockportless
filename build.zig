@@ -116,6 +116,15 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(proxy_tests).step);
 
+    const hosts_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/hosts.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(hosts_tests).step);
+
     const watcher_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/watcher.zig"),

@@ -1,6 +1,6 @@
 ---
 name: verifying-dockportless
-description: Launches and verifies local dev environments using dockportless with worktree-unique project names. Use when starting docker compose services, checking service accessibility via proxy, or when developing across multiple git worktrees to avoid port collisions.
+description: Launches and verifies local dev environments using dockportless with worktree-unique project names. Use when starting docker compose services, checking service accessibility via proxy, enabling TLS/HTTPS routing, or when developing across multiple git worktrees to avoid port collisions.
 ---
 
 # Verifying with dockportless
@@ -15,22 +15,33 @@ Use this skill when you need to start a local development environment with `dock
 PROJECT_NAME="$(basename "$(git rev-parse --show-toplevel)" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/-/g' | sed 's/--*/-/g' | sed 's/^-//;s/-$//')"
 ```
 
-### 2. Start services
+### 2. (If needed) Enable TLS routing
+
+**Skip this step** for HTTP-only services (web apps, REST APIs, etc.).
+
+Run once per machine **only when**:
+- Connecting directly to **PostgreSQL**, **Redis**, or **MongoDB** via dockportless proxy (these protocols require TLS for hostname-based routing)
+- Accessing services over **HTTPS**
+
+```bash
+sudo dockportless trust
+```
+
+### 3. Start services
 
 ```bash
 dockportless run "$PROJECT_NAME" docker compose up -d
 ```
 
-### 3. Access services
+### 4. Access services
 
 Each service is available at `<service>.<project_name>.localhost:7355`:
 
 ```bash
 curl http://web.$PROJECT_NAME.localhost:7355/
-curl http://api.$PROJECT_NAME.localhost:7355/
 ```
 
-### 4. Verify
+### 5. Verify
 
 ```bash
 # Check HTTP response
@@ -53,31 +64,24 @@ Each gets its own allocated ports and its own proxy routes.
 
 ## Compose File Setup
 
-Services must use environment variable substitution for ports so dockportless can inject allocated ports:
+Services must use `${SERVICE_PORT:-default}` pattern in ports. See [COMPOSE-SETUP.md](references/COMPOSE-SETUP.md) for single-port, multi-port examples, and env var naming rules.
 
-```yaml
-services:
-  web:
-    image: nginx
-    ports:
-      - "${WEB_PORT:-8080}:80"
-  api:
-    build: .
-    ports:
-      - "${API_PORT:-3000}:3000"
-```
+## TLS SNI Routing (requires `dockportless trust`)
 
-dockportless sets `WEB_PORT` and `API_PORT` automatically. Without dockportless, the defaults (8080, 3000) are used.
+**Not needed for HTTP-only services.** Required only for HTTPS, PostgreSQL, Redis, or MongoDB direct access. See [TLS-ROUTING.md](references/TLS-ROUTING.md) for protocol details, decision table, and client examples.
 
 ## Workflow
 
 1. **Derive project name** from worktree root (see above)
-2. **Start** with `dockportless run "$PROJECT_NAME" <compose-command>`
-3. **Verify** services respond at `<service>.$PROJECT_NAME.localhost:7355`
-4. **Develop** - make code changes, rebuild containers as needed
-5. **Stop** - `docker compose down` (dockportless cleans up mapping on exit)
+2. **(If needed) Trust CA** with `sudo dockportless trust` — only for HTTPS, PostgreSQL, Redis, MongoDB access
+3. **Start** with `dockportless run "$PROJECT_NAME" <compose-command>`
+4. **Verify** services respond at `<service>.$PROJECT_NAME.localhost:7355`
+5. **Develop** - make code changes, rebuild containers as needed
+6. **Stop** - `docker compose down` (dockportless cleans up mapping on exit)
 
 ## Reference
 
+- [COMPOSE-SETUP.md](references/COMPOSE-SETUP.md) - Compose file examples (single-port, multi-port, env var naming)
+- [TLS-ROUTING.md](references/TLS-ROUTING.md) - TLS SNI protocol details, decision table, client examples
 - [VERIFICATION-GUIDE.md](references/VERIFICATION-GUIDE.md) - Detailed verification steps, multi-worktree scenarios, and troubleshooting
 - [AFTER-RESTART.md](references/AFTER-RESTART.md) - Recovering proxy routing after a machine restart

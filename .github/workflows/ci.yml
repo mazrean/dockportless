@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v8.1.0
 
       - name: Validate skills
         run: uvx --from 'skills-ref @ git+https://github.com/agentskills/agentskills.git#subdirectory=skills-ref' skills-ref validate skills/*

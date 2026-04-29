@@ -1,4 +1,4 @@
 [tools]
 goreleaser = "2.14.1"
 zig = "0.15.2"
-zls = "0.15.1"
+zls = "0.16.0"

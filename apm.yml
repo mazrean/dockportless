@@ -1,0 +1,9 @@
+name: dockportless
+version: 0.1.0
+description: Zig CLI that wraps Compose-spec compatible container builds with auto port allocation + local URL routing.
+
+dependencies:
+  apm:
+    - mazrean/apm-plackage/common
+    - mazrean/apm-plackage/zig
+    - mazrean/apm-plackage/goreleaser

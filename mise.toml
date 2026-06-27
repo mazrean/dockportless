@@ -5,9 +5,7 @@ gh = "latest"
 
 # zig
 zig = "0.15.2"
-zls = "0.15.1"
+zls = "0.16.0"
 
 # goreleaser
-goreleaser = "2.14.1"
-
-# Note: claude-code / codex / other coding-agent CLIs are intentionally NOT pinned per project policy.
+goreleaser = "2.16.0"

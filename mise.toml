@@ -1,4 +1,11 @@
 [tools]
-goreleaser = "2.16.0"
+# common
+"ubi:microsoft/apm" = "latest"
+gh = "latest"
+
+# zig
 zig = "0.15.2"
 zls = "0.16.0"
+
+# goreleaser
+goreleaser = "2.16.0"

@@ -47,8 +47,5 @@ jobs:
 
       - uses: jdx/mise-action@v4
 
-      - uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: build --snapshot --clean
+      - name: Build (via mise-pinned goreleaser)
+        run: mise exec -- goreleaser build --snapshot --clean

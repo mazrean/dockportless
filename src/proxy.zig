@@ -394,9 +394,7 @@ fn forwardHttpRequest(allocator: Allocator, client_fd: posix.socket_t, request_d
         return;
     };
 
-    setRecvTimeout(backend_fd, 5);
-
-    _ = posix.write(backend_fd, request_data) catch {
+    writeAll(backend_fd, request_data) catch {
         sendErrorResponse(client_fd, "502 Bad Gateway", "Failed to forward request");
         return;
     };
@@ -404,10 +402,43 @@ fn forwardHttpRequest(allocator: Allocator, client_fd: posix.socket_t, request_d
     var buf = try allocator.alloc(u8, 65536);
     defer allocator.free(buf);
 
+    // Relay both directions instead of a single request/response, so keep-alive
+    // requests and request bodies that arrive after the headers reach the backend too.
+    // A browser only reuses a connection for the same origin, so the Host stays the same.
+    var client_open = true;
     while (true) {
-        const n = posix.read(backend_fd, buf) catch break;
-        if (n == 0) break;
-        _ = posix.write(client_fd, buf[0..n]) catch break;
+        var fds = [2]posix.pollfd{
+            .{ .fd = if (client_open) client_fd else -1, .events = posix.POLL.IN, .revents = 0 },
+            .{ .fd = backend_fd, .events = posix.POLL.IN, .revents = 0 },
+        };
+
+        const ready = posix.poll(&fds, 60_000) catch break;
+        if (ready == 0) break;
+
+        if (fds[0].revents != 0) {
+            const n = posix.read(client_fd, buf) catch break;
+            if (n == 0) {
+                // client is done sending, let the backend finish its response
+                posix.shutdown(backend_fd, .send) catch {};
+                client_open = false;
+            } else {
+                writeAll(backend_fd, buf[0..n]) catch break;
+            }
+        }
+
+        if (fds[1].revents != 0) {
+            const n = posix.read(backend_fd, buf) catch break;
+            if (n == 0) break;
+            writeAll(client_fd, buf[0..n]) catch break;
+        }
+    }
+}
+
+/// posix.write can return after writing only part of the buffer.
+fn writeAll(fd: posix.socket_t, data: []const u8) !void {
+    var written: usize = 0;
+    while (written < data.len) {
+        written += try posix.write(fd, data[written..]);
     }
 }
 
@@ -649,4 +680,81 @@ test "extractHostHeader: case insensitive" {
 test "extractHostHeader: no host header" {
     const headers = "GET / HTTP/1.1\r\nAccept: */*\r\n\r\n";
     try std.testing.expect(extractHostHeader(headers) == null);
+}
+
+/// Listen on an ephemeral loopback port and return the socket together with the port.
+fn listenLoopback() !struct { fd: posix.socket_t, port: u16 } {
+    const fd = try posix.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    errdefer posix.close(fd);
+
+    var addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 0);
+    try posix.bind(fd, &addr.any, addr.getOsSockLen());
+    try posix.listen(fd, 1);
+
+    var len: posix.socklen_t = addr.getOsSockLen();
+    try posix.getsockname(fd, &addr.any, &len);
+    return .{ .fd = fd, .port = addr.getPort() };
+}
+
+fn connectLoopback(port: u16) !posix.socket_t {
+    const addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port);
+    const fd = try posix.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    errdefer posix.close(fd);
+    try posix.connect(fd, &addr.any, addr.getOsSockLen());
+    return fd;
+}
+
+const test_request_1 = "GET / HTTP/1.1\r\nHost: web.myapp.localhost:7355\r\n\r\n";
+const test_request_2_headers = "POST /echo HTTP/1.1\r\nHost: web.myapp.localhost:7355\r\nContent-Length: 5\r\n\r\n";
+const test_request_2_body = "hello";
+const test_response_1 = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+const test_response_2 = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+
+/// Keep-alive backend: answers two requests on the same connection, the second one echoes its body.
+fn testKeepAliveBackend(listen_fd: posix.socket_t) void {
+    const conn = posix.accept(listen_fd, null, null, 0) catch return;
+    defer posix.close(conn);
+
+    var buf: [test_request_2_headers.len + test_request_2_body.len]u8 = undefined;
+    readExact(conn, buf[0..test_request_1.len]) catch return;
+    _ = posix.write(conn, test_response_1) catch return;
+
+    readExact(conn, &buf) catch return;
+    if (!std.mem.endsWith(u8, &buf, test_request_2_body)) return;
+    _ = posix.write(conn, test_response_2) catch return;
+
+    // stay open like a real keep-alive server until the proxy hangs up
+    _ = posix.read(conn, &buf) catch {};
+}
+
+test "forwardHttpRequest: keeps relaying on a keep-alive connection" {
+    const backend = try listenLoopback();
+    defer posix.close(backend.fd);
+    const backend_thread = try std.Thread.spawn(.{}, testKeepAliveBackend, .{backend.fd});
+    defer backend_thread.join();
+
+    // the proxy side of the client connection
+    const front = try listenLoopback();
+    defer posix.close(front.fd);
+    const client_fd = try connectLoopback(front.port);
+    defer posix.close(client_fd);
+    const proxied_fd = try posix.accept(front.fd, null, null, 0);
+    defer posix.close(proxied_fd);
+    setRecvTimeout(client_fd, 2);
+
+    // the first request was already read by readRequestAndExtractHost
+    const proxy_thread = try std.Thread.spawn(.{}, forwardHttpRequest, .{ std.testing.allocator, proxied_fd, test_request_1, backend.port });
+
+    var buf: [test_response_2.len]u8 = undefined;
+    try readExact(client_fd, buf[0..test_response_1.len]);
+    try std.testing.expectEqualStrings(test_response_1, buf[0..test_response_1.len]);
+
+    // second request on the same connection, body sent separately from the headers
+    _ = try posix.write(client_fd, test_request_2_headers);
+    _ = try posix.write(client_fd, test_request_2_body);
+    try readExact(client_fd, &buf);
+    try std.testing.expectEqualStrings(test_response_2, &buf);
+
+    try posix.shutdown(client_fd, .send);
+    proxy_thread.join();
 }

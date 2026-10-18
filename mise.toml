@@ -5,7 +5,7 @@ gh = "latest"
 
 # zig
 zig = "0.15.2"
-zls = "0.16.0"
+zls = "0.17.0"
 
 # goreleaser
 goreleaser = "2.18.2"
